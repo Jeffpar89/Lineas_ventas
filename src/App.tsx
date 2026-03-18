@@ -12,6 +12,45 @@ interface ModelProfile {
   concept: string;
 }
 
+const DEFAULT_MODELS: ModelProfile[] = [
+  { 
+    id: 1,
+    name: "Ari Espinoza", 
+    description: "Es una modelo de belleza física excepcional y estilo peculiar, enfocada en shows sexuales explícitos de alto impacto, dominando categorías intensas como anal, garganta profunda, fetiche de pies y sexo en general.",
+    concept: "Dominación intensa y fetiche de pies"
+  },
+  { 
+    id: 2,
+    name: "Jeimi Escobar", 
+    description: "Es una atractiva modelo madura (MILF) de gran elegancia, especializada en fetiches de humillación (Cornudo/Cuckold) combinados con la adoración sofisticada de sus pies, medias y tacones.",
+    concept: "Humillación sofisticada (Cuckold) y adoración de pies"
+  },
+  { 
+    id: 3,
+    name: "Liliana Delgado", 
+    description: "Es una modelo Teen BBW de rostro muy bello, con una oferta versátil que combina shows enfocados en sus senos y blowjobs, junto con una fuerte línea de fetiches de dominación y sumisión (Kinky, Sissy, Cornudo y Pies).",
+    concept: "Versatilidad BBW: Senos, Blowjobs y Dominación Kinky"
+  },
+  { 
+    id: 4,
+    name: "Natalia Novoa", 
+    description: "Es una mujer que irradia sofisticación y glamour, destacando con una estética sumamente elegante y de alta gama para nichos de exclusividad y adoración VIP (Medias, Tacones y Diosa).",
+    concept: "Elegancia de alta gama: Diosa en medias y tacones"
+  },
+  {
+    id: 5,
+    name: "Lorena Lopez",
+    description: "Modelo Curvy muy experimentada y flexible que contrasta un look tierno e intelectual con shows de altísima intensidad, destacando sus senos grandes, el uso magistral de la fuckmachine y el contenido sexual de calidad, se identifican patrones de anal, blowjob, deepthroat y fetiches; como contenido exclusivo.",
+    concept: "Contraste intelectual y shows de alta intensidad con fuckmachine"
+  },
+  {
+    id: 6,
+    name: "Valentina Botia",
+    description: "Modelo de curvas impactantes que monetiza nichos explícitos de altísimo valor (anal y exclusividad de lactancia), complementando su intensa oferta con fetiche de pies, blowjob y juegos de roles.",
+    concept: "Monetización de nichos explícitos de alto valor (Anal, Lactancia y Fetiches)"
+  }
+];
+
 const INITIAL_DATA: TableRow[] = [
   { categoria: "Tema de Sala", opcion: "Opción 1", ingles: "Elegant teen & perfect feet worship ✨", espanol: "Teen elegante y adoración de pies perfectos ✨" },
   { categoria: "Tema de Sala", opcion: "Opción 2", ingles: "VIP Foot Lounge: Soft soles & glamour 🥂", espanol: "Salón VIP de Pies: Plantas suaves y glamour 🥂" },
@@ -44,29 +83,42 @@ export default function App() {
   const [modelConcept, setModelConcept] = useState('');
   const [data, setData] = useState<TableRow[]>(INITIAL_DATA);
   const [loading, setLoading] = useState(false);
+  const [quotaError, setQuotaError] = useState(false);
   const [copied, setCopied] = useState(false);
   const [individualCopied, setIndividualCopied] = useState<string | null>(null);
   
   const [models, setModels] = useState<ModelProfile[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<number | null>(null);
   const [savingModel, setSavingModel] = useState(false);
+  const [isAddingModel, setIsAddingModel] = useState(false);
+  const [newModelName, setNewModelName] = useState('');
 
   useEffect(() => {
     fetchModels();
   }, []);
 
-  const fetchModels = async () => {
+  const fetchModels = () => {
     try {
-      const res = await fetch('/api/models');
-      const data = await res.json();
-      setModels(data);
-      if (data.length > 0) {
-        setSelectedModelId(data[0].id);
-        setModelDescription(data[0].description);
-        setModelConcept(data[0].concept || '');
+      const savedModels = localStorage.getItem('webcam_models');
+      let modelsData: ModelProfile[] = [];
+      
+      if (savedModels) {
+        modelsData = JSON.parse(savedModels);
+      } else {
+        modelsData = DEFAULT_MODELS;
+        localStorage.setItem('webcam_models', JSON.stringify(DEFAULT_MODELS));
+      }
+      
+      setModels(modelsData);
+      if (modelsData.length > 0) {
+        const firstModel = modelsData[0];
+        setSelectedModelId(firstModel.id);
+        setModelDescription(firstModel.description);
+        setModelConcept(firstModel.concept || '');
       }
     } catch (error) {
       console.error("Error fetching models:", error);
+      setModels(DEFAULT_MODELS);
     }
   };
 
@@ -79,26 +131,51 @@ export default function App() {
     }
   };
 
-  const saveModelDescription = async () => {
+  const saveModelDescription = () => {
     if (!selectedModelId) return;
-    const model = models.find(m => m.id === selectedModelId);
-    if (!model) return;
-
+    
     setSavingModel(true);
     try {
-      await fetch('/api/models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          name: model.name, 
-          description: modelDescription,
-          concept: modelConcept 
-        })
-      });
-      // Update local state
-      setModels(models.map(m => m.id === selectedModelId ? { ...m, description: modelDescription, concept: modelConcept } : m));
+      const updatedModels = models.map(m => 
+        m.id === selectedModelId 
+          ? { ...m, description: modelDescription, concept: modelConcept } 
+          : m
+      );
+      
+      setModels(updatedModels);
+      localStorage.setItem('webcam_models', JSON.stringify(updatedModels));
+      
+      // Small delay to show saving state
+      setTimeout(() => setSavingModel(false), 500);
     } catch (error) {
       console.error("Error saving model:", error);
+      setSavingModel(false);
+    }
+  };
+
+  const addNewModel = () => {
+    if (!newModelName.trim()) return;
+    
+    setSavingModel(true);
+    try {
+      const newModel: ModelProfile = {
+        id: Date.now(),
+        name: newModelName,
+        description: '',
+        concept: ''
+      };
+      
+      const updatedModels = [...models, newModel];
+      setModels(updatedModels);
+      localStorage.setItem('webcam_models', JSON.stringify(updatedModels));
+      
+      setSelectedModelId(newModel.id);
+      setModelDescription('');
+      setModelConcept('');
+      setIsAddingModel(false);
+      setNewModelName('');
+    } catch (error) {
+      console.error("Error adding new model:", error);
     } finally {
       setSavingModel(false);
     }
@@ -113,21 +190,26 @@ export default function App() {
 
   const generateContent = async () => {
     setLoading(true);
+    setQuotaError(false);
 
     try {
-      // Fetch history to avoid repetition
+      // Fetch history from localStorage to avoid repetition
       let historyContext = "";
       if (selectedModelId) {
-        const historyRes = await fetch(`/api/history/${selectedModelId}`);
-        const historyData = await historyRes.json();
-        if (historyData.length > 0) {
-          historyContext = `CONTENIDO PREVIO GENERADO (NO REPETIR ESTAS FRASES O IDEAS): ${JSON.stringify(historyData)}`;
+        const savedHistory = localStorage.getItem(`history_${selectedModelId}`);
+        if (savedHistory) {
+          const historyData = JSON.parse(savedHistory);
+          if (historyData.length > 0) {
+            // Limit to last 3 entries to save tokens
+            const recentHistory = historyData.slice(-3);
+            historyContext = `CONTENIDO PREVIO GENERADO (NO REPETIR ESTAS FRASES O IDEAS): ${JSON.stringify(recentHistory)}`;
+          }
         }
       }
 
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
+        model: "gemini-3-flash-preview",
         config: {
           systemInstruction: `Eres un estratega senior de marketing y contenido para la industria webcam de alto nivel (Tribu 1126). 
           Tu lenguaje debe ser sofisticado, profesional, persuasivo y altamente específico del nicho. 
@@ -148,6 +230,7 @@ export default function App() {
               required: ["categoria", "opcion", "ingles", "espanol"],
             },
           },
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         },
         contents: `Genera un organigrama estratégico diario de alto impacto para:
         - Modelo: ${models.find(m => m.id === selectedModelId)?.name || "General"}
@@ -176,17 +259,24 @@ export default function App() {
       const generatedData = JSON.parse(response.text);
       setData(generatedData);
 
-      // Save to history
+      // Save to history in localStorage
       if (selectedModelId) {
-        await fetch('/api/history', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ modelId: selectedModelId, content: generatedData })
-        });
+        const savedHistory = localStorage.getItem(`history_${selectedModelId}`);
+        let historyData = savedHistory ? JSON.parse(savedHistory) : [];
+        historyData.push(generatedData);
+        // Keep only last 10 entries in history
+        if (historyData.length > 10) historyData.shift();
+        localStorage.setItem(`history_${selectedModelId}`, JSON.stringify(historyData));
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error generating content:", error);
-      alert("Hubo un error al generar el contenido. Por favor intenta de nuevo.");
+      
+      const errorStr = JSON.stringify(error);
+      if (errorStr.includes("RESOURCE_EXHAUSTED") || errorStr.includes("429")) {
+        setQuotaError(true);
+      } else {
+        alert("Hubo un error al generar el contenido. Por favor intenta de nuevo.");
+      }
     } finally {
       setLoading(false);
     }
@@ -246,6 +336,30 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#f5f5f5] font-sans p-4 md:p-10 selection:bg-red-600 selection:text-white antialiased">
       <div className="max-w-7xl mx-auto">
+        {/* Quota Error Banner */}
+        {quotaError && (
+          <div className="mb-8 p-6 bg-red-900/20 border border-red-500/30 rounded-2xl flex items-start gap-4 animate-in fade-in slide-in-from-top-4 duration-500">
+            <div className="p-3 bg-red-500/20 rounded-xl text-red-500">
+              <Sparkles size={24} />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-red-500 font-serif italic text-xl mb-1">Límite de IA Alcanzado</h3>
+              <p className="text-red-500/70 text-sm leading-relaxed">
+                Has excedido el límite de uso diario de la inteligencia artificial (Quota Exceeded). 
+                Esto sucede debido a las restricciones de la versión gratuita de Gemini. 
+                <br />
+                <span className="font-bold">Solución:</span> Espera unos minutos e intenta de nuevo, o revisa tu plan en Google AI Studio.
+              </p>
+              <button 
+                onClick={() => generateContent()}
+                className="mt-4 px-6 py-2 bg-red-600 text-white rounded-full text-xs font-mono uppercase tracking-widest hover:bg-red-500 transition-all"
+              >
+                Reintentar Ahora
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Header Section */}
         <header className="mb-12 border-b border-red-900/20 pb-10 relative">
           <div className="absolute -top-20 -left-20 w-96 h-96 bg-red-600/5 blur-[150px] rounded-full pointer-events-none"></div>
@@ -273,19 +387,47 @@ export default function App() {
           
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-10 relative z-10">
             <div className="flex flex-col gap-4">
-              <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">01. Modelo</label>
-              <div className="relative">
-                <select 
-                  value={selectedModelId || ''}
-                  onChange={(e) => handleModelChange(Number(e.target.value))}
-                  className="w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg appearance-none cursor-pointer hover:bg-black"
+              <div className="flex justify-between items-center">
+                <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">01. Modelo</label>
+                <button 
+                  onClick={() => setIsAddingModel(!isAddingModel)}
+                  className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
                 >
-                  {models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                </select>
-                <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none opacity-30">
-                  <User size={14} />
-                </div>
+                  {isAddingModel ? 'Cancelar' : '+ Nueva'}
+                </button>
               </div>
+              
+              {isAddingModel ? (
+                <div className="flex gap-2">
+                  <input 
+                    type="text"
+                    value={newModelName}
+                    onChange={(e) => setNewModelName(e.target.value)}
+                    placeholder="Nombre..."
+                    className="flex-1 bg-[#0a0a0a] border border-red-600/30 p-4 font-sans text-sm focus:outline-none focus:border-red-600 text-white rounded-lg"
+                  />
+                  <button 
+                    onClick={addNewModel}
+                    disabled={savingModel}
+                    className="p-4 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all disabled:opacity-50"
+                  >
+                    <Check size={16} />
+                  </button>
+                </div>
+              ) : (
+                <div className="relative">
+                  <select 
+                    value={selectedModelId || ''}
+                    onChange={(e) => handleModelChange(Number(e.target.value))}
+                    className="w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg appearance-none cursor-pointer hover:bg-black"
+                  >
+                    {models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                  <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none opacity-30">
+                    <User size={14} />
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex flex-col gap-4">
