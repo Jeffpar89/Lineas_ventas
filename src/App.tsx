@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Copy, Check, FileSpreadsheet, ExternalLink, FileText, Sparkles, Loader2, Search, Save, User } from 'lucide-react';
+import { Download, Copy, Check, FileSpreadsheet, ExternalLink, FileText, Sparkles, Loader2, Search, Save, User, AlertCircle, X } from 'lucide-react';
 import { TableRow } from './data';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
@@ -16,37 +16,37 @@ const DEFAULT_MODELS: ModelProfile[] = [
   { 
     id: 1,
     name: "Ari Espinoza", 
-    description: "Es una modelo de belleza física excepcional y estilo peculiar, enfocada en shows sexuales explícitos de alto impacto, dominando categorías intensas como anal, garganta profunda, fetiche de pies y sexo en general.",
+    description: "Modelo de belleza peculiar y excepcional; se enfoca en shows sexuales explícitos de alto impacto, dominando categorías intensas como anal, garganta profunda y fetiche de pies.",
     concept: "Dominación intensa y fetiche de pies"
   },
   { 
     id: 2,
     name: "Jeimi Escobar", 
-    description: "Es una atractiva modelo madura (MILF) de gran elegancia, especializada en fetiches de humillación (Cornudo/Cuckold) combinados con la adoración sofisticada de sus pies, medias y tacones.",
+    description: "Atractiva y elegante modelo madura (MILF); su especialidad es la combinación de fetiches de humillación (Cornudo) con la adoración de pies, medias y tacones.",
     concept: "Humillación sofisticada (Cuckold) y adoración de pies"
   },
   { 
     id: 3,
     name: "Liliana Delgado", 
-    description: "Es una modelo Teen BBW de rostro muy bello, con una oferta versátil que combina shows enfocados en sus senos y blowjobs, junto con una fuerte línea de fetiches de dominación y sumisión (Kinky, Sissy, Cornudo y Pies).",
+    description: "Modelo Teen BBW de rostro muy bello; su oferta combina shows de senos y blowjobs con una línea de fetiches de pies y cornudos",
     concept: "Versatilidad BBW: Senos, Blowjobs y Dominación Kinky"
   },
   { 
     id: 4,
     name: "Natalia Novoa", 
-    description: "Es una mujer que irradia sofisticación y glamour, destacando con una estética sumamente elegante y de alta gama para nichos de exclusividad y adoración VIP (Medias, Tacones y Diosa).",
+    description: "Modelo Teen enfocada en el Glamour; irradia sofisticación y alta estética para nichos de exclusividad y adoración VIP (Medias, Tacones y Diosa).",
     concept: "Elegancia de alta gama: Diosa en medias y tacones"
   },
   {
     id: 5,
     name: "Lorena Lopez",
-    description: "Modelo Curvy muy experimentada y flexible que contrasta un look tierno e intelectual con shows de altísima intensidad, destacando sus senos grandes, el uso magistral de la fuckmachine y el contenido sexual de calidad, se identifican patrones de anal, blowjob, deepthroat y fetiches; como contenido exclusivo.",
+    description: "Modelo voluptuosa muy experimentada y flexible que contrasta un look tierno con shows de altísima intensidad, destacando sus senos grandes, el uso magistral de la fuckmachine y el contenido anal premium.",
     concept: "Contraste intelectual y shows de alta intensidad con fuckmachine"
   },
   {
     id: 6,
     name: "Valentina Botia",
-    description: "Modelo de curvas impactantes que monetiza nichos explícitos de altísimo valor (anal y exclusividad de lactancia), complementando su intensa oferta con fetiche de pies, blowjob y juegos de roles.",
+    description: "Modelo de curvas impactantes que monetiza nichos explícitos de altísimo valor (anal y exclusividad de lactancia), complementando su intensa oferta con fetiche de pies y juegos de roles.",
     concept: "Monetización de nichos explícitos de alto valor (Anal, Lactancia y Fetiches)"
   }
 ];
@@ -84,6 +84,7 @@ export default function App() {
   const [data, setData] = useState<TableRow[]>(INITIAL_DATA);
   const [loading, setLoading] = useState(false);
   const [quotaError, setQuotaError] = useState(false);
+  const [generalError, setGeneralError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [individualCopied, setIndividualCopied] = useState<string | null>(null);
   
@@ -95,6 +96,46 @@ export default function App() {
 
   useEffect(() => {
     fetchModels();
+    
+    // Una vez que se cargan los modelos, forzamos la actualización de las descripciones predeterminadas
+    // si el usuario no las ha modificado manualmente (o simplemente para asegurar que tengan las nuevas versiones)
+    const savedModels = localStorage.getItem('webcam_models');
+    if (savedModels) {
+      try {
+        const parsed = JSON.parse(savedModels) as ModelProfile[];
+        let modified = false;
+        const updated = parsed.map(m => {
+          const defaultModel = DEFAULT_MODELS.find(dm => dm.id === m.id);
+          // Si es uno de los modelos base y su descripción es la versión "suave" o está vacía, la actualizamos
+          if (defaultModel && (m.description.includes('especializada en contenido para adultos') || m.description.includes('Modelo que irradia sofisticación') || m.description.includes('Modelo Curvy experimentada'))) {
+            modified = true;
+            return { ...m, description: defaultModel.description, concept: defaultModel.concept };
+          }
+          return m;
+        });
+        
+        if (modified) {
+          localStorage.setItem('webcam_models', JSON.stringify(updated));
+          setModels(updated);
+          
+          // Actualizar la descripción y concepto actuales si el modelo seleccionado fue uno de los modificados
+          const lastSelectedId = localStorage.getItem('last_selected_model_id');
+          const currentId = lastSelectedId ? Number(lastSelectedId) : (updated.length > 0 ? updated[0].id : null);
+          const currentModel = updated.find(m => m.id === currentId);
+          if (currentModel) {
+            setModelDescription(currentModel.description);
+            setModelConcept(currentModel.concept || '');
+          }
+        }
+      } catch (e) {
+        console.error("Error syncing models", e);
+      }
+    }
+    
+    const lastSelectedId = localStorage.getItem('last_selected_model_id');
+    if (lastSelectedId) {
+      setSelectedModelId(Number(lastSelectedId));
+    }
   }, []);
 
   const fetchModels = () => {
@@ -103,18 +144,40 @@ export default function App() {
       let modelsData: ModelProfile[] = [];
       
       if (savedModels) {
-        modelsData = JSON.parse(savedModels);
-      } else {
+        try {
+          const parsed = JSON.parse(savedModels);
+          if (Array.isArray(parsed)) {
+            // Merge logic: Ensure all DEFAULT_MODELS are present
+            const existingIds = new Set(parsed.map(m => m.id));
+            
+            // We don't "upgrade" anymore, we respect the user's choice or the new defaults
+            modelsData = parsed;
+
+            const missingDefaults = DEFAULT_MODELS.filter(m => !existingIds.has(m.id));
+            modelsData = [...modelsData, ...missingDefaults].sort((a, b) => a.id - b.id);
+            
+            localStorage.setItem('webcam_models', JSON.stringify(modelsData));
+          }
+        } catch (e) {
+          console.error("Error parsing saved models");
+        }
+      }
+      
+      if (modelsData.length === 0) {
         modelsData = DEFAULT_MODELS;
         localStorage.setItem('webcam_models', JSON.stringify(DEFAULT_MODELS));
       }
       
       setModels(modelsData);
-      if (modelsData.length > 0) {
-        const firstModel = modelsData[0];
-        setSelectedModelId(firstModel.id);
-        setModelDescription(firstModel.description);
-        setModelConcept(firstModel.concept || '');
+      
+      const lastSelectedId = localStorage.getItem('last_selected_model_id');
+      const initialId = lastSelectedId ? Number(lastSelectedId) : (modelsData.length > 0 ? modelsData[0].id : null);
+      
+      if (initialId) {
+        const model = modelsData.find(m => m.id === initialId) || modelsData[0];
+        setSelectedModelId(model.id);
+        setModelDescription(model.description);
+        setModelConcept(model.concept || '');
       }
     } catch (error) {
       console.error("Error fetching models:", error);
@@ -122,9 +185,29 @@ export default function App() {
     }
   };
 
+  const resetModels = () => {
+    if (window.confirm('¿Estás seguro de que quieres restaurar las modelos originales? Se perderán los cambios personalizados.')) {
+      localStorage.removeItem('webcam_models');
+      localStorage.removeItem('last_selected_model_id');
+      fetchModels();
+    }
+  };
+
   const handleModelChange = (id: number) => {
     setSelectedModelId(id);
-    const model = models.find(m => m.id === id);
+    localStorage.setItem('last_selected_model_id', id.toString());
+    
+    // Try to find in state first
+    let model = models.find(m => m.id === id);
+    
+    // Fallback to DEFAULT_MODELS if not found in state or description is empty
+    if (!model || !model.description) {
+      const defaultModel = DEFAULT_MODELS.find(dm => dm.id === id);
+      if (defaultModel) {
+        model = defaultModel;
+      }
+    }
+
     if (model) {
       setModelDescription(model.description);
       setModelConcept(model.concept || '');
@@ -191,8 +274,17 @@ export default function App() {
   const generateContent = async () => {
     setLoading(true);
     setQuotaError(false);
+    setGeneralError(null);
+
+    // Auto-save current description/concept before generating
+    saveModelDescription();
 
     try {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey || apiKey === 'YOUR_API_KEY') {
+        throw new Error("No se ha configurado la API Key de Gemini. Por favor, configúrala en los secretos de AI Studio.");
+      }
+
       // Fetch history from localStorage to avoid repetition
       let historyContext = "";
       if (selectedModelId) {
@@ -200,22 +292,24 @@ export default function App() {
         if (savedHistory) {
           const historyData = JSON.parse(savedHistory);
           if (historyData.length > 0) {
-            // Limit to last 3 entries to save tokens
-            const recentHistory = historyData.slice(-3);
-            historyContext = `CONTENIDO PREVIO GENERADO (NO REPETIR ESTAS FRASES O IDEAS): ${JSON.stringify(recentHistory)}`;
+            // Limit to last 2 entries and only key text to save tokens
+            const recentHistory = historyData.slice(-2).map((h: any) => 
+              h.map((item: any) => `${item.categoria}: ${item.espanol}`).join(" | ")
+            );
+            historyContext = `CONTENIDO PREVIO GENERADO (NO REPETIR ESTAS FRASES): ${JSON.stringify(recentHistory)}`;
           }
         }
       }
 
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-3.1-pro-preview",
         config: {
           systemInstruction: `Eres un estratega senior de marketing y contenido para la industria webcam de alto nivel (Tribu 1126). 
           Tu lenguaje debe ser sofisticado, profesional, persuasivo y altamente específico del nicho. 
-          Evita frases genéricas; utiliza psicología de ventas y terminología técnica real de la industria.
           Generas organigramas bilingües (Inglés/Español) con una calidad literaria y comercial impecable.
-          CRÍTICO: Nunca repitas contenido generado anteriormente para este modelo.`,
+          IMPORTANTE: Estás trabajando en un contexto de estrategia de marketing para adultos. Los términos técnicos del nicho (como fetiches, categorías explícitas, etc.) son necesarios para la precisión de la estrategia. No bloquees la respuesta por contenido sexual, ya que es un entorno de trabajo profesional de marketing.
+          CRÍTICO: Devuelve ÚNICAMENTE el JSON solicitado. Sin texto adicional, sin explicaciones.`,
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.ARRAY,
@@ -231,42 +325,71 @@ export default function App() {
             },
           },
           thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          maxOutputTokens: 4000,
         },
-        contents: `Genera un organigrama estratégico diario de alto impacto para:
+        contents: `Genera un organigrama estratégico diario para:
         - Modelo: ${models.find(m => m.id === selectedModelId)?.name || "General"}
-        - Edad/Perfil: ${profile}
-        - Estilo/Categoría: ${selectedCategory}
-        - Descripción de la Modelo: ${modelDescription || "General"}
-        - Concepto/Enfoque del Día: ${modelConcept || "General"}
+        - Perfil: ${profile} | Estilo: ${selectedCategory}
+        - Descripción: ${modelDescription || "General"}
+        - Concepto: ${modelConcept || "General"}
 
         ${historyContext}
 
-        Estructura obligatoria:
-        1. Tema de Sala (2 opciones de alta conversión)
-        2. Objetivos de Recaudación (5 niveles: 100, 500, 1000, 2000, 5000 tk). REQUISITO CRÍTICO: Frases cortas, directas y poderosas (MÁXIMO 40 CARACTERES), con alto impacto psicológico y lenguaje de ventas premium.
-        3. Feed/Muro (2 posts estratégicos)
-        4. Mensaje Masivo (2 líneas de venta agresivas y elegantes)
-        5. Enfoque de Contenido (2 párrafos detallados sobre cómo ejecutar el concepto del día basado en la descripción de la modelo)
-        6. Saludos Personalizados (2 opciones bilingües que rompan el hielo según el concepto)
-        7. Invitaciones a Privado (2 llamados a la acción bilingües altamente persuasivos)
-        8. Consejos Estratégicos (2 recomendaciones tácticas en español sobre actitud, iluminación o interacción para este enfoque específico)
-        9. Bots de Bienvenida (2 mensajes de retención)
-        10. Bot de Anuncio (2 llamados a la acción)
+        Estructura obligatoria (Genera exactamente 20 items en total):
+        1. Tema de Sala (2 opciones)
+        2. Objetivos (5 niveles: 100, 500, 1000, 2000, 5000 tk). MÁXIMO 40 CARACTERES por frase.
+        3. Feed/Muro (2 posts)
+        4. Mensaje Masivo (2 líneas)
+        5. Enfoque de Contenido (2 párrafos concisos)
+        6. Saludos (2 opciones)
+        7. Invitaciones a Privado (2 CTAs)
+        8. Consejos Estratégicos (2 recomendaciones tácticas)
+        9. Bots de Bienvenida (2 mensajes)
+        10. Bot de Anuncio (2 mensajes)
 
-        Asegura que el tono sea coherente con un servicio premium y exclusivo. Para los 'Consejos Estratégicos', puedes dejar el campo de inglés vacío o poner una nota técnica.`,
+        Asegura tono premium y bilingüe.`,
       });
 
-      const generatedData = JSON.parse(response.text);
-      setData(generatedData);
+      if (!response.text) {
+        throw new Error("La IA devolvió una respuesta vacía.");
+      }
 
-      // Save to history in localStorage
-      if (selectedModelId) {
-        const savedHistory = localStorage.getItem(`history_${selectedModelId}`);
-        let historyData = savedHistory ? JSON.parse(savedHistory) : [];
-        historyData.push(generatedData);
-        // Keep only last 10 entries in history
-        if (historyData.length > 10) historyData.shift();
-        localStorage.setItem(`history_${selectedModelId}`, JSON.stringify(historyData));
+      // Clean response text in case of markdown blocks
+      let cleanText = response.text.trim();
+      if (cleanText.startsWith('```json')) {
+        cleanText = cleanText.replace(/^```json/, '').replace(/```$/, '').trim();
+      } else if (cleanText.startsWith('```')) {
+        cleanText = cleanText.replace(/^```/, '').replace(/```$/, '').trim();
+      }
+
+      try {
+        let generatedData = JSON.parse(cleanText);
+        
+        // Handle case where model might wrap the array in an object
+        if (!Array.isArray(generatedData) && typeof generatedData === 'object' && generatedData !== null) {
+          const possibleArray = Object.values(generatedData).find(val => Array.isArray(val));
+          if (possibleArray) {
+            generatedData = possibleArray;
+          }
+        }
+
+        if (!Array.isArray(generatedData)) {
+          throw new Error("El formato de respuesta no es un array válido.");
+        }
+        
+        setData(generatedData);
+
+        // Save to history in localStorage
+        if (selectedModelId) {
+          const savedHistory = localStorage.getItem(`history_${selectedModelId}`);
+          let historyData = savedHistory ? JSON.parse(savedHistory) : [];
+          historyData.push(generatedData);
+          if (historyData.length > 10) historyData.shift();
+          localStorage.setItem(`history_${selectedModelId}`, JSON.stringify(historyData));
+        }
+      } catch (parseError) {
+        console.error("JSON Parse Error:", parseError, "Clean Text:", cleanText);
+        throw new Error("Error al procesar el formato de la respuesta. Por favor intenta de nuevo.");
       }
     } catch (error: any) {
       console.error("Error generating content:", error);
@@ -275,7 +398,7 @@ export default function App() {
       if (errorStr.includes("RESOURCE_EXHAUSTED") || errorStr.includes("429")) {
         setQuotaError(true);
       } else {
-        alert("Hubo un error al generar el contenido. Por favor intenta de nuevo.");
+        setGeneralError(error.message || "Hubo un error al generar el contenido. Por favor intenta de nuevo.");
       }
     } finally {
       setLoading(false);
@@ -335,7 +458,41 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#f5f5f5] font-sans p-4 md:p-10 selection:bg-red-600 selection:text-white antialiased">
+      {/* Loading Overlay */}
+      {loading && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex flex-col items-center justify-center animate-in fade-in duration-300">
+          <div className="relative">
+            <div className="w-24 h-24 border-2 border-red-600/20 border-t-red-600 rounded-full animate-spin"></div>
+            <Sparkles className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-red-600 animate-pulse" size={32} />
+          </div>
+          <h2 className="mt-8 text-2xl font-serif italic text-white tracking-widest animate-pulse">Generando Estrategia...</h2>
+          <p className="mt-2 text-gray-500 font-mono text-[10px] uppercase tracking-[0.3em]">Tribu 1126 • IA Estratégica</p>
+        </div>
+      )}
+
       <div className="max-w-7xl mx-auto">
+        {/* General Error Banner */}
+        {generalError && (
+          <div className="mb-8 p-6 bg-red-900/20 border border-red-500/30 rounded-2xl flex items-start gap-4 animate-in fade-in slide-in-from-top-4 duration-500">
+            <div className="p-3 bg-red-500/20 rounded-xl text-red-500">
+              <AlertCircle size={24} />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-red-500 font-serif italic text-xl mb-1">Error de Generación</h3>
+              <p className="text-red-500/70 text-sm leading-relaxed">{generalError}</p>
+              <button 
+                onClick={() => generateContent()}
+                className="mt-4 px-6 py-2 bg-red-600 text-white rounded-full text-xs font-mono uppercase tracking-widest hover:bg-red-500 transition-all"
+              >
+                Intentar de nuevo
+              </button>
+            </div>
+            <button onClick={() => setGeneralError(null)} className="text-red-500/50 hover:text-red-500">
+              <X size={20} />
+            </button>
+          </div>
+        )}
+
         {/* Quota Error Banner */}
         {quotaError && (
           <div className="mb-8 p-6 bg-red-900/20 border border-red-500/30 rounded-2xl flex items-start gap-4 animate-in fade-in slide-in-from-top-4 duration-500">
@@ -389,12 +546,21 @@ export default function App() {
             <div className="flex flex-col gap-4">
               <div className="flex justify-between items-center">
                 <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">01. Modelo</label>
-                <button 
-                  onClick={() => setIsAddingModel(!isAddingModel)}
-                  className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
-                >
-                  {isAddingModel ? 'Cancelar' : '+ Nueva'}
-                </button>
+                <div className="flex gap-4 items-center">
+                  <button 
+                    onClick={resetModels}
+                    className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
+                    title="Restaurar modelos originales"
+                  >
+                    Reset
+                  </button>
+                  <button 
+                    onClick={() => setIsAddingModel(!isAddingModel)}
+                    className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
+                  >
+                    {isAddingModel ? 'Cancelar' : '+ Nueva'}
+                  </button>
+                </div>
               </div>
               
               {isAddingModel ? (
