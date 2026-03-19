@@ -16,7 +16,7 @@ const DEFAULT_MODELS: ModelProfile[] = [
   { 
     id: 1,
     name: "Ari Espinoza", 
-    description: "Modelo de belleza peculiar y excepcional; se enfoca en shows sexuales explícitos de alto impacto, dominando categorías intensas como anal, garganta profunda y fetiche de pies.",
+    description: "Modelo de belleza física excepcional y estilo peculiar, enfocada en shows sexuales explícitos de alto impacto, dominando categorías intensas como anal, garganta profunda, fetiche de pies y sexo en general.",
     concept: "Dominación intensa y fetiche de pies"
   },
   { 
@@ -40,13 +40,13 @@ const DEFAULT_MODELS: ModelProfile[] = [
   {
     id: 5,
     name: "Lorena Lopez",
-    description: "Modelo voluptuosa muy experimentada y flexible que contrasta un look tierno con shows de altísima intensidad, destacando sus senos grandes, el uso magistral de la fuckmachine y el contenido anal premium.",
+    description: "Modelo Curvy muy experimentada y flexible que contrasta un look tierno e intelectual con shows de altísima intensidad, destacando sus senos grandes, el uso magistral de la fuckmachine y el contenido sexual de calidad, se identifican patrones de anal, blowjob, deepthroat y fetiches; como contenido exclusivo.",
     concept: "Contraste intelectual y shows de alta intensidad con fuckmachine"
   },
   {
     id: 6,
     name: "Valentina Botia",
-    description: "Modelo de curvas impactantes que monetiza nichos explícitos de altísimo valor (anal y exclusividad de lactancia), complementando su intensa oferta con fetiche de pies y juegos de roles.",
+    description: "Modelo de curvas impactantes que monetiza nichos explícitos de altísimo valor (anal y exclusividad de lactancia), complementando su intensa oferta con fetiche de pies, blowjob y juegos de roles.",
     concept: "Monetización de nichos explícitos de alto valor (Anal, Lactancia y Fetiches)"
   }
 ];
@@ -97,41 +97,6 @@ export default function App() {
   useEffect(() => {
     fetchModels();
     
-    // Una vez que se cargan los modelos, forzamos la actualización de las descripciones predeterminadas
-    // si el usuario no las ha modificado manualmente (o simplemente para asegurar que tengan las nuevas versiones)
-    const savedModels = localStorage.getItem('webcam_models');
-    if (savedModels) {
-      try {
-        const parsed = JSON.parse(savedModels) as ModelProfile[];
-        let modified = false;
-        const updated = parsed.map(m => {
-          const defaultModel = DEFAULT_MODELS.find(dm => dm.id === m.id);
-          // Si es uno de los modelos base y su descripción es la versión "suave" o está vacía, la actualizamos
-          if (defaultModel && (m.description.includes('especializada en contenido para adultos') || m.description.includes('Modelo que irradia sofisticación') || m.description.includes('Modelo Curvy experimentada'))) {
-            modified = true;
-            return { ...m, description: defaultModel.description, concept: defaultModel.concept };
-          }
-          return m;
-        });
-        
-        if (modified) {
-          localStorage.setItem('webcam_models', JSON.stringify(updated));
-          setModels(updated);
-          
-          // Actualizar la descripción y concepto actuales si el modelo seleccionado fue uno de los modificados
-          const lastSelectedId = localStorage.getItem('last_selected_model_id');
-          const currentId = lastSelectedId ? Number(lastSelectedId) : (updated.length > 0 ? updated[0].id : null);
-          const currentModel = updated.find(m => m.id === currentId);
-          if (currentModel) {
-            setModelDescription(currentModel.description);
-            setModelConcept(currentModel.concept || '');
-          }
-        }
-      } catch (e) {
-        console.error("Error syncing models", e);
-      }
-    }
-    
     const lastSelectedId = localStorage.getItem('last_selected_model_id');
     if (lastSelectedId) {
       setSelectedModelId(Number(lastSelectedId));
@@ -147,19 +112,57 @@ export default function App() {
         try {
           const parsed = JSON.parse(savedModels);
           if (Array.isArray(parsed)) {
-            // Merge logic: Ensure all DEFAULT_MODELS are present
-            const existingIds = new Set(parsed.map(m => m.id));
+            let modified = false;
             
-            // We don't "upgrade" anymore, we respect the user's choice or the new defaults
-            modelsData = parsed;
+            // Sync and cleanup logic
+            const updated = parsed.map((m: ModelProfile) => {
+              const defaultModel = DEFAULT_MODELS.find(dm => dm.id === m.id);
+              
+              // Si es uno de los modelos base, forzamos la actualización de nombre, descripción y concepto
+              // si detectamos que tiene versiones antiguas o incorrectas (como la tilde en Lorena)
+              if (defaultModel) {
+                const needsUpdate = 
+                  m.name !== defaultModel.name ||
+                  m.description.includes('especializada en contenido para adultos') || 
+                  m.description.includes('Modelo que irradia sofisticación') || 
+                  m.description.includes('Modelo Curvy experimentada') || 
+                  m.description.includes('belleza peculiar y excepcional') ||
+                  (m.id === 6 && !m.description.includes('blowjob')) ||
+                  (m.id === 5 && !m.description.includes('deepthroat')) ||
+                  m.name.includes('López'); // Caso específico de Lorena con tilde
 
+                if (needsUpdate) {
+                  modified = true;
+                  return { ...m, name: defaultModel.name, description: defaultModel.description, concept: defaultModel.concept };
+                }
+              }
+              return m;
+            }).filter((m: ModelProfile) => {
+              // Eliminar duplicados de Lorena con tilde o nombres incorrectos
+              if (m.name.includes('López') || (m.name === "Lorena Lopez" && m.id !== 5)) {
+                modified = true;
+                return false;
+              }
+              return true;
+            });
+
+            // Merge logic: Ensure all DEFAULT_MODELS are present
+            const existingIds = new Set(updated.map(m => m.id));
             const missingDefaults = DEFAULT_MODELS.filter(m => !existingIds.has(m.id));
-            modelsData = [...modelsData, ...missingDefaults].sort((a, b) => a.id - b.id);
             
-            localStorage.setItem('webcam_models', JSON.stringify(modelsData));
+            if (missingDefaults.length > 0) {
+              modified = true;
+              modelsData = [...updated, ...missingDefaults].sort((a, b) => a.id - b.id);
+            } else {
+              modelsData = updated;
+            }
+            
+            if (modified) {
+              localStorage.setItem('webcam_models', JSON.stringify(modelsData));
+            }
           }
         } catch (e) {
-          console.error("Error parsing saved models");
+          console.error("Error parsing saved models", e);
         }
       }
       
@@ -303,7 +306,7 @@ export default function App() {
 
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
+        model: "gemini-3-flash-preview",
         config: {
           systemInstruction: `Eres un estratega senior de marketing y contenido para la industria webcam de alto nivel (Tribu 1126). 
           Tu lenguaje debe ser sofisticado, profesional, persuasivo y altamente específico del nicho. 
