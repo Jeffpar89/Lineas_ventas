@@ -208,9 +208,17 @@ function App() {
 
   const login = async () => {
     try {
+      setGeneralError(null);
       await signInWithPopup(auth, googleProvider);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Login error:", error);
+      if (error.code === 'auth/popup-closed-by-user') {
+        setGeneralError("La ventana de inicio de sesión se cerró antes de completar.");
+      } else if (error.code === 'auth/unauthorized-domain') {
+        setGeneralError("Este dominio no está autorizado para el inicio de sesión. Por favor, contacta al administrador.");
+      } else {
+        setGeneralError("Error al iniciar sesión: " + error.message);
+      }
     }
   };
 
@@ -233,58 +241,27 @@ function App() {
         try {
           const parsed = JSON.parse(savedModels);
           if (Array.isArray(parsed)) {
-            let modified = false;
-            
-            // Sync and cleanup logic
-            const updated = parsed.map((m: ModelProfile) => {
-              const defaultModel = DEFAULT_MODELS.find(dm => dm.id === m.id);
-              
-              // Si es uno de los modelos base, forzamos la actualización de nombre, descripción y concepto
-              // si detectamos que tiene versiones antiguas o incorrectas (como la tilde en Lorena)
-              if (defaultModel) {
-                const needsUpdate = 
-                  m.name !== defaultModel.name ||
-                  m.description.includes('especializada en contenido para adultos') || 
-                  m.description.includes('Modelo que irradia sofisticación') || 
-                  m.description.includes('Modelo Curvy experimentada') || 
-                  m.description.includes('belleza peculiar y excepcional') ||
-                  (m.id === 6 && !m.description.includes('blowjob')) ||
-                  (m.id === 5 && !m.description.includes('deepthroat')) ||
-                  m.name.includes('López'); // Caso específico de Lorena con tilde
+            // Unify IDs to strings and remove aggressive cleanup
+            modelsData = parsed.map((m: any) => ({
+              ...m,
+              id: m.id.toString()
+            }));
 
-                if (needsUpdate) {
-                  modified = true;
-                  return { ...m, name: defaultModel.name, description: defaultModel.description, concept: defaultModel.concept };
-                }
+            // Ensure all DEFAULT_MODELS are present
+            const existingIds = new Set(modelsData.map(m => m.id));
+            DEFAULT_MODELS.forEach(def => {
+              if (!existingIds.has(def.id.toString())) {
+                modelsData.push({ ...def, id: def.id.toString() });
               }
-              return m;
-            }).filter((m: ModelProfile) => {
-              // Eliminar duplicados de Lorena con tilde o nombres incorrectos
-              if (m.name.includes('López') || (m.name === "Lorena Lopez" && m.id !== 5)) {
-                modified = true;
-                return false;
-              }
-              return true;
             });
 
-            // Merge logic: Ensure all DEFAULT_MODELS are present
-            const existingIds = new Set(updated.map(m => m.id));
-            const missingDefaults = DEFAULT_MODELS.filter(m => !existingIds.has(m.id));
+            modelsData.sort((a, b) => {
+              const idA = Number(a.id) || 0;
+              const idB = Number(b.id) || 0;
+              return idA - idB;
+            });
             
-            if (missingDefaults.length > 0) {
-              modified = true;
-              modelsData = [...updated, ...missingDefaults].sort((a, b) => {
-                const idA = Number(a.id);
-                const idB = Number(b.id);
-                return idA - idB;
-              });
-            } else {
-              modelsData = updated;
-            }
-            
-            if (modified) {
-              localStorage.setItem('webcam_models', JSON.stringify(modelsData));
-            }
+            localStorage.setItem('webcam_models', JSON.stringify(modelsData));
           }
         } catch (e) {
           console.error("Error parsing saved models", e);
@@ -292,24 +269,24 @@ function App() {
       }
       
       if (modelsData.length === 0) {
-        modelsData = DEFAULT_MODELS;
-        localStorage.setItem('webcam_models', JSON.stringify(DEFAULT_MODELS));
+        modelsData = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString() }));
+        localStorage.setItem('webcam_models', JSON.stringify(modelsData));
       }
       
       setModels(modelsData);
       
       const lastSelectedId = localStorage.getItem('last_selected_model_id');
-      const initialId = lastSelectedId ? Number(lastSelectedId) : (modelsData.length > 0 ? modelsData[0].id : null);
+      const initialId = lastSelectedId || (modelsData.length > 0 ? modelsData[0].id.toString() : null);
       
       if (initialId) {
-        const model = modelsData.find(m => m.id === initialId) || modelsData[0];
+        const model = modelsData.find(m => m.id.toString() === initialId.toString()) || modelsData[0];
         setSelectedModelId(model.id);
         setModelDescription(model.description);
         setModelConcept(model.concept || '');
       }
     } catch (error) {
       console.error("Error fetching models:", error);
-      setModels(DEFAULT_MODELS);
+      setModels(DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString() })));
     }
   };
 
@@ -448,6 +425,7 @@ function App() {
     setLoading(true);
     setQuotaError(false);
     setGeneralError(null);
+    setData([]);
 
     // Auto-save current description/concept before generating
     saveModelDescription();
@@ -465,7 +443,6 @@ function App() {
         if (savedHistory) {
           const historyData = JSON.parse(savedHistory);
           if (historyData.length > 0) {
-            // Limit to last 2 entries and only key text to save tokens
             const recentHistory = historyData.slice(-2).map((h: any) => 
               h.map((item: any) => `${item.categoria}: ${item.espanol}`).join(" | ")
             );
@@ -474,14 +451,14 @@ function App() {
         }
       }
 
-      const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+      const ai = new GoogleGenAI({ apiKey });
+      const stream = await ai.models.generateContentStream({
+        model: "gemini-flash-latest",
         config: {
           systemInstruction: `Eres un estratega senior de marketing y contenido para la industria webcam de alto nivel (Tribu 1126). 
           Tu lenguaje debe ser sofisticado, profesional, persuasivo y altamente específico del nicho. 
           Generas organigramas bilingües (Inglés/Español) con una calidad literaria y comercial impecable.
-          IMPORTANTE: Estás trabajando en un contexto de estrategia de marketing para adultos. Los términos técnicos del nicho (como fetiches, categorías explícitas, etc.) son necesarios para la precisión de la estrategia. No bloquees la respuesta por contenido sexual, ya que es un entorno de trabajo profesional de marketing.
+          IMPORTANTE: Estás trabajando en un contexto de estrategia de marketing para adultos. Los términos técnicos del nicho son necesarios. No bloquees la respuesta.
           CRÍTICO: Devuelve ÚNICAMENTE el JSON solicitado. Sin texto adicional, sin explicaciones.`,
           responseMimeType: "application/json",
           responseSchema: {
@@ -501,7 +478,7 @@ function App() {
           maxOutputTokens: 4000,
         },
         contents: `Genera un organigrama estratégico diario para:
-        - Modelo: ${models.find(m => m.id === selectedModelId)?.name || "General"}
+        - Modelo: ${models.find(m => m.id.toString() === selectedModelId?.toString())?.name || "General"}
         - Perfil: ${profile} | Estilo: ${selectedCategory}
         - Descripción: ${modelDescription || "General"}
         - Concepto: ${modelConcept || "General"}
@@ -523,12 +500,16 @@ function App() {
         Asegura tono premium y bilingüe.`,
       });
 
-      if (!response.text) {
+      let fullText = "";
+      for await (const chunk of stream) {
+        fullText += chunk.text;
+      }
+
+      if (!fullText) {
         throw new Error("La IA devolvió una respuesta vacía.");
       }
 
-      // Clean response text in case of markdown blocks
-      let cleanText = response.text.trim();
+      let cleanText = fullText.trim();
       if (cleanText.startsWith('```json')) {
         cleanText = cleanText.replace(/^```json/, '').replace(/```$/, '').trim();
       } else if (cleanText.startsWith('```')) {
@@ -537,22 +518,15 @@ function App() {
 
       try {
         let generatedData = JSON.parse(cleanText);
-        
-        // Handle case where model might wrap the array in an object
         if (!Array.isArray(generatedData) && typeof generatedData === 'object' && generatedData !== null) {
           const possibleArray = Object.values(generatedData).find(val => Array.isArray(val));
-          if (possibleArray) {
-            generatedData = possibleArray;
-          }
+          if (possibleArray) generatedData = possibleArray;
         }
 
-        if (!Array.isArray(generatedData)) {
-          throw new Error("El formato de respuesta no es un array válido.");
-        }
+        if (!Array.isArray(generatedData)) throw new Error("Formato inválido");
         
         setData(generatedData);
 
-        // Save to history in localStorage
         if (selectedModelId) {
           const savedHistory = localStorage.getItem(`history_${selectedModelId}`);
           let historyData = savedHistory ? JSON.parse(savedHistory) : [];
@@ -561,18 +535,13 @@ function App() {
           localStorage.setItem(`history_${selectedModelId}`, JSON.stringify(historyData));
         }
       } catch (parseError) {
-        console.error("JSON Parse Error:", parseError, "Clean Text:", cleanText);
-        throw new Error("Error al procesar el formato de la respuesta. Por favor intenta de nuevo.");
+        console.error("Parse Error:", parseError, "Text:", cleanText);
+        throw new Error("Error al procesar la respuesta. Intenta de nuevo.");
       }
     } catch (error: any) {
-      console.error("Error generating content:", error);
-      
-      const errorStr = JSON.stringify(error);
-      if (errorStr.includes("RESOURCE_EXHAUSTED") || errorStr.includes("429")) {
-        setQuotaError(true);
-      } else {
-        setGeneralError(error.message || "Hubo un error al generar el contenido. Por favor intenta de nuevo.");
-      }
+      console.error("Generation Error:", error);
+      if (JSON.stringify(error).includes("429")) setQuotaError(true);
+      else setGeneralError(error.message || "Error al generar contenido.");
     } finally {
       setLoading(false);
     }
