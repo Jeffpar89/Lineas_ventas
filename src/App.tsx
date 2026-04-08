@@ -1,15 +1,60 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Copy, Check, FileSpreadsheet, ExternalLink, FileText, Sparkles, Loader2, Search, Save, User, AlertCircle, X } from 'lucide-react';
+import { Download, Copy, Check, FileSpreadsheet, ExternalLink, FileText, Sparkles, Loader2, Search, Save, User, AlertCircle, X, LogIn, LogOut, Trash2 } from 'lucide-react';
 import { TableRow } from './data';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
+import { auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged, collection, query, onSnapshot, setDoc, doc, deleteDoc, getDoc, User as FirebaseUser, handleFirestoreError, OperationType } from './firebase';
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: any }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    (this as any).state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  render() {
+    const { hasError, error } = (this as any).state;
+    if (hasError) {
+      let message = "Algo salió mal.";
+      try {
+        const errInfo = JSON.parse(error.message);
+        if (errInfo.error.includes("insufficient permissions")) {
+          message = "No tienes permisos para realizar esta acción o ver estos datos.";
+        }
+      } catch (e) {
+        message = error?.message || message;
+      }
+
+      return (
+        <div className="min-h-screen bg-black flex items-center justify-center p-4">
+          <div className="bg-[#111] border border-red-600/20 p-8 rounded-2xl max-w-md w-full text-center">
+            <AlertCircle size={48} className="text-red-600 mx-auto mb-4" />
+            <h2 className="text-2xl font-serif text-white mb-2">Error de Aplicación</h2>
+            <p className="text-gray-400 text-sm mb-6">{message}</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="px-6 py-2 bg-red-600 text-white rounded-full text-xs font-mono uppercase tracking-widest hover:bg-red-700 transition-all"
+            >
+              Recargar Página
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return (this as any).props.children;
+  }
+}
 
 interface ModelProfile {
-  id: number;
+  id: string | number;
   name: string;
   description: string;
   concept: string;
+  userId?: string;
 }
 
 const DEFAULT_MODELS: ModelProfile[] = [
@@ -76,7 +121,15 @@ const CATEGORIES = [
   "Goddess", "Cosplay"
 ];
 
-export default function App() {
+export default function AppWrapper() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
+}
+
+function App() {
   const [profile, setProfile] = useState('18 a 25');
   const [selectedCategory, setSelectedCategory] = useState('Natural');
   const [modelDescription, setModelDescription] = useState('');
@@ -89,19 +142,87 @@ export default function App() {
   const [individualCopied, setIndividualCopied] = useState<string | null>(null);
   
   const [models, setModels] = useState<ModelProfile[]>([]);
-  const [selectedModelId, setSelectedModelId] = useState<number | null>(null);
+  const [selectedModelId, setSelectedModelId] = useState<string | number | null>(null);
   const [savingModel, setSavingModel] = useState(false);
   const [isAddingModel, setIsAddingModel] = useState(false);
   const [newModelName, setNewModelName] = useState('');
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
 
   useEffect(() => {
-    fetchModels();
-    
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthReady) return;
+
+    let unsubscribe: () => void;
+
+    if (user) {
+      // Sync with Firestore
+      const path = 'models';
+      const q = query(collection(db, path));
+      unsubscribe = onSnapshot(q, (snapshot) => {
+        const firestoreModels = snapshot.docs
+          .map(doc => ({ ...doc.data() } as ModelProfile))
+          .filter(m => m.userId === user.uid);
+        
+        // Merge with defaults if they don't exist in Firestore
+        const mergedModels = [...firestoreModels];
+        DEFAULT_MODELS.forEach(def => {
+          if (!mergedModels.find(m => m.id === def.id || m.id === def.id.toString())) {
+            mergedModels.push({ ...def, id: def.id.toString(), userId: user.uid });
+          }
+        });
+        
+        setModels(mergedModels.sort((a, b) => {
+          const idA = Number(a.id);
+          const idB = Number(b.id);
+          if (idA < idB) return -1;
+          if (idA > idB) return 1;
+          return 0;
+        }));
+      }, (error) => {
+        handleFirestoreError(error, OperationType.LIST, path);
+      });
+    } else {
+      // Use LocalStorage fallback for guests
+      fetchModels();
+    }
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [user, isAuthReady]);
+
+  useEffect(() => {
     const lastSelectedId = localStorage.getItem('last_selected_model_id');
     if (lastSelectedId) {
-      setSelectedModelId(Number(lastSelectedId));
+      setSelectedModelId(lastSelectedId);
     }
   }, []);
+
+  const login = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      console.error("Login error:", error);
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      setModels([]);
+      setSelectedModelId(null);
+    } catch (error) {
+      console.error("Logout error:", error);
+    }
+  };
 
   const fetchModels = () => {
     try {
@@ -152,7 +273,11 @@ export default function App() {
             
             if (missingDefaults.length > 0) {
               modified = true;
-              modelsData = [...updated, ...missingDefaults].sort((a, b) => a.id - b.id);
+              modelsData = [...updated, ...missingDefaults].sort((a, b) => {
+                const idA = Number(a.id);
+                const idB = Number(b.id);
+                return idA - idB;
+              });
             } else {
               modelsData = updated;
             }
@@ -196,74 +321,119 @@ export default function App() {
     }
   };
 
-  const handleModelChange = (id: number) => {
+  const handleModelChange = (id: string | number) => {
     setSelectedModelId(id);
     localStorage.setItem('last_selected_model_id', id.toString());
     
-    // Try to find in state first
-    let model = models.find(m => m.id === id);
-    
-    // Fallback to DEFAULT_MODELS if not found in state or description is empty
-    if (!model || !model.description) {
-      const defaultModel = DEFAULT_MODELS.find(dm => dm.id === id);
-      if (defaultModel) {
-        model = defaultModel;
-      }
-    }
-
+    const model = models.find(m => m.id === id || m.id === id.toString());
     if (model) {
       setModelDescription(model.description);
       setModelConcept(model.concept || '');
     }
   };
 
-  const saveModelDescription = () => {
+  const saveModelDescription = async () => {
     if (!selectedModelId) return;
     
     setSavingModel(true);
+    const path = `models/${selectedModelId}`;
     try {
-      const updatedModels = models.map(m => 
-        m.id === selectedModelId 
-          ? { ...m, description: modelDescription, concept: modelConcept } 
-          : m
-      );
+      if (user) {
+        const modelRef = doc(db, 'models', selectedModelId.toString());
+        const currentModel = models.find(m => m.id === selectedModelId);
+        await setDoc(modelRef, {
+          ...currentModel,
+          id: selectedModelId.toString(),
+          description: modelDescription,
+          concept: modelConcept,
+          userId: user.uid
+        }, { merge: true });
+      } else {
+        const updatedModels = models.map(m => 
+          m.id === selectedModelId 
+            ? { ...m, description: modelDescription, concept: modelConcept } 
+            : m
+        );
+        setModels(updatedModels);
+        localStorage.setItem('webcam_models', JSON.stringify(updatedModels));
+      }
       
-      setModels(updatedModels);
-      localStorage.setItem('webcam_models', JSON.stringify(updatedModels));
-      
-      // Small delay to show saving state
       setTimeout(() => setSavingModel(false), 500);
     } catch (error) {
-      console.error("Error saving model:", error);
+      if (user) {
+        handleFirestoreError(error, OperationType.WRITE, path);
+      } else {
+        console.error("Error saving model:", error);
+      }
       setSavingModel(false);
     }
   };
 
-  const addNewModel = () => {
+  const addNewModel = async () => {
     if (!newModelName.trim()) return;
     
     setSavingModel(true);
+    const newId = Date.now().toString();
+    const path = `models/${newId}`;
     try {
       const newModel: ModelProfile = {
-        id: Date.now(),
+        id: newId,
         name: newModelName,
         description: '',
-        concept: ''
+        concept: '',
+        userId: user?.uid
       };
       
-      const updatedModels = [...models, newModel];
-      setModels(updatedModels);
-      localStorage.setItem('webcam_models', JSON.stringify(updatedModels));
+      if (user) {
+        await setDoc(doc(db, 'models', newId), newModel);
+      } else {
+        const updatedModels = [...models, newModel];
+        setModels(updatedModels);
+        localStorage.setItem('webcam_models', JSON.stringify(updatedModels));
+      }
       
-      setSelectedModelId(newModel.id);
+      setSelectedModelId(newId);
       setModelDescription('');
       setModelConcept('');
       setIsAddingModel(false);
       setNewModelName('');
     } catch (error) {
-      console.error("Error adding new model:", error);
+      if (user) {
+        handleFirestoreError(error, OperationType.CREATE, path);
+      } else {
+        console.error("Error adding new model:", error);
+      }
     } finally {
       setSavingModel(false);
+    }
+  };
+
+  const deleteModel = async () => {
+    if (!selectedModelId) return;
+    const modelToDelete = models.find(m => m.id === selectedModelId || m.id === selectedModelId.toString());
+    if (!modelToDelete) return;
+
+    const path = `models/${selectedModelId}`;
+    if (window.confirm(`¿Estás seguro de que quieres eliminar a la modelo "${modelToDelete.name}"?`)) {
+      try {
+        if (user) {
+          await deleteDoc(doc(db, 'models', selectedModelId.toString()));
+        } else {
+          const updatedModels = models.filter(m => m.id !== selectedModelId && m.id !== selectedModelId.toString());
+          setModels(updatedModels);
+          localStorage.setItem('webcam_models', JSON.stringify(updatedModels));
+        }
+        
+        setSelectedModelId(null);
+        setModelDescription('');
+        setModelConcept('');
+      } catch (error) {
+        if (user) {
+          handleFirestoreError(error, OperationType.DELETE, path);
+        } else {
+          console.error("Error deleting model:", error);
+        }
+      }
     }
   };
 
@@ -283,7 +453,7 @@ export default function App() {
     saveModelDescription();
 
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
+      const apiKey = import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
       if (!apiKey || apiKey === 'YOUR_API_KEY') {
         throw new Error("No se ha configurado la API Key de Gemini. Por favor, configúrala en los secretos de AI Studio.");
       }
@@ -304,7 +474,7 @@ export default function App() {
         }
       }
 
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY });
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         config: {
@@ -523,6 +693,33 @@ export default function App() {
         {/* Header Section */}
         <header className="mb-12 border-b border-red-900/20 pb-10 relative">
           <div className="absolute -top-20 -left-20 w-96 h-96 bg-red-600/5 blur-[150px] rounded-full pointer-events-none"></div>
+          
+          <div className="flex justify-end mb-8">
+            {user ? (
+              <div className="flex items-center gap-4 bg-black/40 p-2 pl-4 rounded-full border border-white/5">
+                <div className="flex flex-col items-end">
+                  <span className="text-[10px] text-gray-500 font-mono uppercase tracking-tighter">Sesión Iniciada</span>
+                  <span className="text-xs text-white font-medium">{user.displayName || user.email}</span>
+                </div>
+                <button 
+                  onClick={logout}
+                  className="p-3 bg-red-600/10 text-red-500 rounded-full hover:bg-red-600 hover:text-white transition-all group"
+                  title="Cerrar Sesión"
+                >
+                  <LogOut size={16} className="group-hover:scale-110 transition-transform" />
+                </button>
+              </div>
+            ) : (
+              <button 
+                onClick={login}
+                className="flex items-center gap-3 px-6 py-3 bg-white text-black rounded-full font-mono text-xs font-bold uppercase tracking-widest hover:bg-red-600 hover:text-white transition-all shadow-[0_0_30px_rgba(255,255,255,0.1)]"
+              >
+                <LogIn size={16} />
+                Sincronizar con Google
+              </button>
+            )}
+          </div>
+
           <div className="relative z-10 text-center lg:text-left">
             <h1 className="text-6xl md:text-8xl font-serif font-black tracking-tighter mb-4 text-white leading-none">
               Generador de <span className="text-red-600 italic font-medium">Contenido</span>
@@ -550,6 +747,13 @@ export default function App() {
               <div className="flex justify-between items-center">
                 <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">01. Modelo</label>
                 <div className="flex gap-4 items-center">
+                  <button 
+                    onClick={deleteModel}
+                    className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
+                    title="Eliminar modelo seleccionada"
+                  >
+                    Eliminar
+                  </button>
                   <button 
                     onClick={resetModels}
                     className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
@@ -587,9 +791,10 @@ export default function App() {
                 <div className="relative">
                   <select 
                     value={selectedModelId || ''}
-                    onChange={(e) => handleModelChange(Number(e.target.value))}
+                    onChange={(e) => handleModelChange(e.target.value)}
                     className="w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg appearance-none cursor-pointer hover:bg-black"
                   >
+                    <option value="" disabled>Seleccionar Modelo...</option>
                     {models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                   </select>
                   <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none opacity-30">
@@ -632,7 +837,17 @@ export default function App() {
             </div>
 
             <div className="flex flex-col gap-4 md:col-span-2 lg:col-span-2">
-              <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">04. Perfil / Descripción</label>
+              <div className="flex justify-between items-center">
+                <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">04. Perfil / Descripción</label>
+                <button 
+                  onClick={saveModelDescription}
+                  disabled={savingModel || !selectedModelId}
+                  className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono flex items-center gap-2"
+                >
+                  {savingModel ? <Loader2 size={10} className="animate-spin" /> : <Save size={10} />}
+                  Guardar Perfil
+                </button>
+              </div>
               <div className="relative">
                 <textarea 
                   value={modelDescription}

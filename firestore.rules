@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: models
+    // Document ID: {modelId}
+    // Fields:
+    //   - id: string (required) - Unique ID
+    //   - name: string (required) - Model Name
+    //   - description: string (optional) - Model Description
+    //   - concept: string (optional) - Daily Concept
+    //   - userId: string (required) - Owner User ID
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    function isValidModel(data) {
+      return data.keys().hasAll(['id', 'name', 'userId']) &&
+             data.id is string &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.userId == request.auth.uid &&
+             (!('description' in data) || (data.description is string && data.description.size() < 5000)) &&
+             (!('concept' in data) || (data.concept is string && data.concept.size() < 1000));
+    }
+
+    match /models/{modelId} {
+      allow read: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid);
+      allow create: if isAuthenticated() && isValidModel(request.resource.data);
+      allow update: if isAuthenticated() && isDocOwner() && isValidModel(request.resource.data);
+      allow delete: if isAuthenticated() && isDocOwner();
+    }
+
+    match /test/connection {
+      allow read: if true;
+    }
+  }
+}

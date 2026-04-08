@@ -1,0 +1,23 @@
+{
+  "entities": {
+    "Model": {
+      "title": "Model",
+      "description": "A webcam model profile",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique ID" },
+        "name": { "type": "string", "description": "Model Name" },
+        "description": { "type": "string", "description": "Model Description" },
+        "concept": { "type": "string", "description": "Daily Concept" },
+        "userId": { "type": "string", "description": "Owner User ID" }
+      },
+      "required": ["id", "name", "userId"]
+    }
+  },
+  "firestore": {
+    "/models/{modelId}": {
+      "schema": "Model",
+      "description": "Collection of model profiles"
+    }
+  }
+}
