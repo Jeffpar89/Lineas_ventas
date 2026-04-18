@@ -1,11 +1,25 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, query, deleteDoc, getDocFromServer, updateDoc, addDoc } from 'firebase/firestore';
-import firebaseConfig from '../firebase-applet-config.json';
+import { getAnalytics } from "firebase/analytics";
 
+// Configuración real de Firebase proporcionada por el usuario
+const firebaseConfig = {
+  apiKey: "AIzaSyDgMs49ykDYtOaYWJBAgT6lniw8rwCvlK0",
+  authDomain: "branding-22ad9.firebaseapp.com",
+  projectId: "branding-22ad9",
+  storageBucket: "branding-22ad9.firebasestorage.app",
+  messagingSenderId: "448852065619",
+  appId: "1:448852065619:web:cfc718fb3bd3765a4135a6",
+  measurementId: "G-0X4FQ4ZSFL"
+};
+
+// Inicialización de Firebase
 const app = initializeApp(firebaseConfig);
+const analytics = typeof window !== 'undefined' ? getAnalytics(app) : null;
+
 export const auth = getAuth(app);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = getFirestore(app);
 export const googleProvider = new GoogleAuthProvider();
 
 export enum OperationType {
