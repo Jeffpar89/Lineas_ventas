@@ -170,45 +170,26 @@ function App() {
         const firestoreModels = snapshot.docs
           .map(doc => ({ ...doc.data() } as ModelProfile));
         
-        // Filter models belonging to this user or seed them if empty
+        // Filter models belonging to this user
         const userModels = firestoreModels.filter(m => m.userId === user.uid);
         
-        if (userModels.length === 0 && snapshot.metadata.fromCache === false) {
-          // Case: First login or empty cloud. Seed from localStorage or defaults.
-          const savedModels = localStorage.getItem('webcam_models');
-          let modelsToSeed: ModelProfile[] = [];
-          
-          if (savedModels) {
-            try {
-              const parsed = JSON.parse(savedModels);
-              if (Array.isArray(parsed) && parsed.length > 0) {
-                modelsToSeed = parsed.map(m => ({ ...m, userId: user.uid }));
-              }
-            } catch (e) {
-              console.error("Error parsing local models for migration", e);
-            }
-          }
-          
-          if (modelsToSeed.length === 0) {
-            modelsToSeed = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString(), userId: user.uid }));
-          }
-
-          // Batch upload (simplified with separate calls)
-          for (const m of modelsToSeed) {
+        // If empty in cloud, seed with defaults ONCE
+        if (userModels.length === 0 && !snapshot.metadata.fromCache) {
+          const initialModels = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString(), userId: user.uid }));
+          for (const m of initialModels) {
             try {
               await setDoc(doc(db, 'models', m.id.toString()), m);
             } catch (se) {
-              console.error("Error seeding model:", m.name, se);
+              console.error("Error seeding default model:", se);
             }
           }
-          // The next snapshot will contain the seeded models
           return;
         }
 
         setModels(userModels.sort((a, b) => {
-          const idA = Number(a.id) || 0;
-          const idB = Number(b.id) || 0;
-          return idA - idB;
+          const idA = a.id.toString();
+          const idB = b.id.toString();
+          return idA.localeCompare(idB, undefined, {numeric: true, sensitivity: 'base'});
         }));
       }, (error) => {
         handleFirestoreError(error, OperationType.LIST, path);
@@ -222,6 +203,17 @@ function App() {
       if (unsubscribe) unsubscribe();
     };
   }, [user, isAuthReady]);
+
+  // Sync selection details
+  useEffect(() => {
+    if (selectedModelId && models.length > 0) {
+      const model = models.find(m => m.id.toString() === selectedModelId.toString());
+      if (model) {
+        setModelDescription(model.description);
+        setModelConcept(model.concept || '');
+      }
+    }
+  }, [selectedModelId, models]);
 
   useEffect(() => {
     const lastSelectedId = localStorage.getItem('last_selected_model_id');
@@ -265,27 +257,10 @@ function App() {
         try {
           const parsed = JSON.parse(savedModels);
           if (Array.isArray(parsed)) {
-            // Unify IDs to strings and remove aggressive cleanup
             modelsData = parsed.map((m: any) => ({
               ...m,
               id: m.id.toString()
             }));
-
-            // Ensure all DEFAULT_MODELS are present
-            const existingIds = new Set(modelsData.map(m => m.id));
-            DEFAULT_MODELS.forEach(def => {
-              if (!existingIds.has(def.id.toString())) {
-                modelsData.push({ ...def, id: def.id.toString() });
-              }
-            });
-
-            modelsData.sort((a, b) => {
-              const idA = Number(a.id) || 0;
-              const idB = Number(b.id) || 0;
-              return idA - idB;
-            });
-            
-            localStorage.setItem('webcam_models', JSON.stringify(modelsData));
           }
         } catch (e) {
           console.error("Error parsing saved models", e);
@@ -305,32 +280,18 @@ function App() {
       if (initialId) {
         const model = modelsData.find(m => m.id.toString() === initialId.toString()) || modelsData[0];
         setSelectedModelId(model.id);
-        setModelDescription(model.description);
-        setModelConcept(model.concept || '');
       }
     } catch (error) {
       console.error("Error fetching models:", error);
-      setModels(DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString() })));
-    }
-  };
-
-  const resetModels = () => {
-    if (window.confirm('¿Estás seguro de que quieres restaurar las modelos originales? Se perderán los cambios personalizados.')) {
-      localStorage.removeItem('webcam_models');
-      localStorage.removeItem('last_selected_model_id');
-      fetchModels();
+      const initial = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString() }));
+      setModels(initial);
+      if (initial.length > 0) setSelectedModelId(initial[0].id);
     }
   };
 
   const handleModelChange = (id: string | number) => {
     setSelectedModelId(id);
     localStorage.setItem('last_selected_model_id', id.toString());
-    
-    const model = models.find(m => m.id === id || m.id === id.toString());
-    if (model) {
-      setModelDescription(model.description);
-      setModelConcept(model.concept || '');
-    }
   };
 
   const saveModelDescription = async () => {
@@ -748,13 +709,6 @@ function App() {
                     Eliminar
                   </button>
                   <button 
-                    onClick={resetModels}
-                    className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
-                    title="Restaurar modelos originales"
-                  >
-                    Reset
-                  </button>
-                  <button 
                     onClick={() => setIsAddingModel(!isAddingModel)}
                     className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
                   >
@@ -788,7 +742,7 @@ function App() {
                     className="w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg appearance-none cursor-pointer hover:bg-black"
                   >
                     <option value="" disabled>Seleccionar Modelo...</option>
-                    {models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                    {models.map(m => <option key={m.id.toString()} value={m.id.toString()}>{m.name}</option>)}
                   </select>
                   <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none opacity-30">
                     <User size={14} />
