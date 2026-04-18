@@ -203,11 +203,15 @@ function App() {
           return;
         }
 
-        setModels(firestoreModels.sort((a, b) => {
+        const sortedModels = firestoreModels.sort((a, b) => {
           const idA = a.id.toString();
           const idB = b.id.toString();
           return idA.localeCompare(idB, undefined, {numeric: true, sensitivity: 'base'});
-        }));
+        });
+
+        setModels(sortedModels);
+        // Sync to LocalStorage for guest mode persistence
+        localStorage.setItem('webcam_models', JSON.stringify(sortedModels));
       }, (error) => {
         handleFirestoreError(error, OperationType.LIST, path);
       });
@@ -260,8 +264,7 @@ function App() {
   const logout = async () => {
     try {
       await signOut(auth);
-      setModels([]);
-      setSelectedModelId(null);
+      // No need to clear state manually, the useEffect will call fetchModels()
     } catch (error) {
       console.error("Logout error:", error);
     }
