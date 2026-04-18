@@ -162,17 +162,15 @@ function App() {
   const [newModelName, setNewModelName] = useState('');
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [sharedId, setSharedId] = useState<string | null>(null);
-  const [linkCopied, setLinkCopied] = useState(false);
-
-  useEffect(() => {
-    // Check for shared view ID in URL
-    const urlParams = new URLSearchParams(window.location.search);
-    const viewId = urlParams.get('v');
-    if (viewId) {
-      setSharedId(viewId);
+  const [sharedId, setSharedId] = useState<string | null>(() => {
+    // Detect shared view ID in URL immediately to avoid race conditions
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      return urlParams.get('v');
     }
-  }, []);
+    return null;
+  });
+  const [linkCopied, setLinkCopied] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -186,149 +184,114 @@ function App() {
     if (!isAuthReady) return;
 
     let unsubscribe: () => void;
+    
+    // Determining which data to fetch:
+    // 1. If we have a 'v' in URL, it's a shared view - show that user's data.
+    // 2. Otherwise, if logged in, show current user's data.
+    const effectiveUserId = sharedId || (user ? user.uid : null);
+    const isSharedMode = !!sharedId;
+    const isOwner = user && (!sharedId || user.uid === sharedId);
 
-    if (user) {
-      // Sync with Firestore
-      const path = 'models';
-      const q = query(collection(db, path), where('userId', '==', user.uid));
-      
-      unsubscribe = onSnapshot(q, async (snapshot) => {
-        const firestoreModels = snapshot.docs.map(doc => {
-          const data = doc.data();
-          return {
-            ...data,
-            id: data.id ? data.id.toString() : doc.id
-          } as ModelProfile;
-        });
-        
-        // If empty in cloud and explicitly synced from server (not just empty cache), seed with defaults
-        if (snapshot.empty && !snapshot.metadata.fromCache) {
-          const initialModels = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString(), userId: user.uid }));
-          for (const m of initialModels) {
-            try {
-              // Using a composite ID (UID_ModelID) to prevent collisions between different users
-              const compositeId = `${user.uid}_${m.id}`;
-              await setDoc(doc(db, 'models', compositeId), {
-                ...m,
-                id: compositeId // Update internal ID to match the doc ID for consistency
-              });
-            } catch (se) {
-              console.error("Error seeding default model:", se);
-            }
-          }
-          return;
-        }
-
-        const sortedModels = firestoreModels.sort((a, b) => {
-          const idA = a.id.toString();
-          const idB = b.id.toString();
-          return idA.localeCompare(idB, undefined, {numeric: true, sensitivity: 'base'});
-        });
-
-        setModels(sortedModels);
-        
-        // Ensure a model is selected if none is currently selected
-        if (sortedModels.length > 0) {
-          setSelectedModelId(prev => {
-            if (prev && sortedModels.some(m => m.id.toString() === prev.toString())) return prev;
-            return sortedModels[0].id;
-          });
-        }
-
-        // Sync to LocalStorage for guest mode persistence
-        localStorage.setItem('webcam_models', JSON.stringify(sortedModels));
-      }, (error) => {
-        handleFirestoreError(error, OperationType.LIST, path);
-      });
-    } else if (sharedId) {
-      // Shared View Mode (ReadOnly)
-      const path = 'models';
-      // We check for both explicitly assigned userId and potential legacy documents (though filtered for safety)
-      const q = query(collection(db, path), where('userId', '==', String(sharedId)));
-      
-      console.log("Attempting to fetch shared models for ID:", sharedId);
-
-      unsubscribe = onSnapshot(q, (snapshot) => {
-        if (snapshot.empty) {
-          console.warn("No models found for this shared ID.");
-          // Fallback to defaults or local if empty, but for shared view we usually expect data
-        }
-
-        const firestoreModels = snapshot.docs.map(doc => {
-          const data = doc.data();
-          return {
-            ...data,
-            id: data.id ? data.id.toString() : doc.id
-          } as ModelProfile;
-        });
-        
-        const sortedModels = firestoreModels.sort((a, b) => {
-          const nameA = a.name.toLowerCase();
-          const nameB = b.name.toLowerCase();
-          return nameA.localeCompare(nameB);
-        });
-
-        console.log(`Fetched ${sortedModels.length} shared models.`);
-        setModels(sortedModels);
-
-        // Ensure a model is selected if none is currently selected
-        if (sortedModels.length > 0) {
-          setSelectedModelId(prev => {
-            if (prev && sortedModels.some(m => m.id.toString() === prev.toString())) return prev;
-            return sortedModels[0].id;
-          });
-        }
-        
-        localStorage.setItem('webcam_models', JSON.stringify(sortedModels));
-      }, (error) => {
-        console.error("Critical Error fetching shared models:", error);
-      });
-    } else {
-      // Use LocalStorage fallback for guests
+    // Fetch from LocalStorage if neither logged in nor shared view
+    if (!effectiveUserId) {
       fetchModels();
+      return;
     }
+
+    console.log(`📡 Syncing data for: ${effectiveUserId} | Mode: ${isSharedMode ? 'Shared' : 'Private'} | Owner: ${isOwner}`);
+    
+    const path = 'models';
+    const q = query(collection(db, path), where('userId', '==', String(effectiveUserId)));
+    
+    unsubscribe = onSnapshot(q, async (snapshot) => {
+      const firestoreModels = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          ...data,
+          id: data.id ? data.id.toString() : doc.id
+        } as ModelProfile;
+      });
+      
+      // Seed ONLY if it's the owner and database is truly empty
+      if (snapshot.empty && !snapshot.metadata.fromCache && isOwner && user) {
+        console.log("🌱 First time user detected. Seeding defaults...");
+        const initialModels = DEFAULT_MODELS.map(m => ({ ...m, userId: user.uid }));
+        for (const m of initialModels) {
+          try {
+            const compositeId = `${user.uid}_${m.id}`;
+            await setDoc(doc(db, 'models', compositeId), {
+              ...m,
+              id: compositeId,
+              userId: user.uid
+            });
+          } catch (se) {
+            console.error("Error seeding:", se);
+          }
+        }
+        return;
+      }
+
+      const sortedModels = firestoreModels.sort((a, b) => {
+        const nameA = a.name.toLowerCase();
+        const nameB = b.name.toLowerCase();
+        return nameA.localeCompare(nameB, undefined, {numeric: true, sensitivity: 'base'});
+      });
+
+      setModels(sortedModels);
+      
+      // Selection persistence logic
+      if (sortedModels.length > 0) {
+        setSelectedModelId(prevId => {
+          const stringPrevId = prevId?.toString();
+          const exists = sortedModels.some(m => m.id.toString() === stringPrevId);
+          if (exists) return prevId;
+          
+          // Fallback to first one
+          return sortedModels[0].id;
+        });
+      }
+
+      // Persist local copy
+      if (!isSharedMode || isOwner) {
+        localStorage.setItem('webcam_models', JSON.stringify(sortedModels));
+      }
+    }, (error) => {
+      console.error("❌ Sync Error:", error);
+      if (isOwner) {
+        handleFirestoreError(error, OperationType.LIST, path);
+      }
+    });
 
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, [user, isAuthReady]);
+  }, [user, isAuthReady, sharedId]);
 
-  // 1. Sync on selection change (to load the model data into state)
+  // Unified Effect: Updates all UI fields whenever models or selection change (Real-time sync)
   useEffect(() => {
-    if (selectedModelId && models.length > 0) {
-      const model = models.find(m => m.id.toString() === selectedModelId.toString());
-      if (model) {
-        setProfile(model.profile || '18 a 25');
-        setSelectedCategory(model.category || 'Natural');
-        setModelDescription(model.description || '');
-        setModelConcept(model.concept || '');
-      }
-    }
-  }, [selectedModelId]);
+    if (!selectedModelId || models.length === 0) return;
 
-  // 2. Real-time sync ONLY for readers/monitors (when they are not logged in)
-  // This ensures that if the Master changes a description, the Monitor sees the update instantly.
-  useEffect(() => {
-    if (!user && selectedModelId && models.length > 0) {
-      const model = models.find(m => m.id.toString() === selectedModelId.toString());
-      if (model) {
-        setProfile(model.profile || '18 a 25');
-        setSelectedCategory(model.category || 'Natural');
-        setModelDescription(model.description || '');
-        setModelConcept(model.concept || '');
-      }
+    const currentModel = models.find(m => m.id.toString() === selectedModelId.toString());
+    if (currentModel) {
+      // Only update if current user is NOT the owner OR if we are in shared mode
+      // This allows masters to see real-time updates from other masters if needed
+      // But mostly it ensures visitors see what the master is typing/saving
+      setProfile(currentModel.profile || '18 a 25');
+      setSelectedCategory(currentModel.category || 'Natural');
+      setModelDescription(currentModel.description || '');
+      setModelConcept(currentModel.concept || '');
     }
-  }, [models, user]);
+  }, [selectedModelId, models]);
 
   // 3. Status indicator for shared view
-  const isReadOnly = sharedId && !user;
+  const isReadOnly = !!sharedId && (!user || user.uid !== sharedId);
 
   useEffect(() => {
     const lastSelectedId = localStorage.getItem('last_selected_model_id');
-    if (lastSelectedId) {
+    if (lastSelectedId && !sharedId) {
       setSelectedModelId(lastSelectedId);
     }
-  }, []);
+  }, [sharedId]);
 
   const copyShareLink = () => {
     if (!user) return;
@@ -777,14 +740,16 @@ function App() {
             {isReadOnly && (
               <div className="flex items-center gap-2 bg-red-600/10 px-4 py-2 rounded-full border border-red-600/20">
                 <Eye size={14} className="text-red-600" />
-                <span className="text-[10px] text-red-500 font-mono uppercase tracking-widest font-bold">Vista de Solo Lectura</span>
+                <span className="text-[10px] text-red-500 font-mono uppercase tracking-widest font-bold">Vista de Solo Lectura {sharedId === user?.uid ? '(Tu Link)' : ''}</span>
               </div>
             )}
             
-            {sharedId && !user && models.length === 0 && (
+            {(sharedId) && models.length === 0 && (
               <div className="flex items-center gap-2 bg-yellow-600/10 px-4 py-2 rounded-full border border-yellow-600/20">
                 <AlertCircle size={14} className="text-yellow-600" />
-                <span className="text-[10px] text-yellow-500 font-mono uppercase tracking-widest">No se encontraron modelos</span>
+                <span className="text-[10px] text-yellow-500 font-mono uppercase tracking-widest leading-none">
+                  {sharedId === user?.uid ? 'Sincronizando tus modelos...' : 'No se encontraron modelos para este link'}
+                </span>
               </div>
             )}
 
