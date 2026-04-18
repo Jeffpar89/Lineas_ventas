@@ -43,10 +43,13 @@ service cloud.firestore {
     }
 
     match /models/{modelId} {
-      allow read: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid);
+      // Allow anyone to read/list models (needed for sharing via link)
+      allow read, list: if true;
+      
+      // Only authenticated owners can create, update or delete
       allow create: if isAuthenticated() && isValidModel(request.resource.data);
-      allow update: if isAuthenticated() && isDocOwner() && isValidModel(request.resource.data);
-      allow delete: if isAuthenticated() && isDocOwner();
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && isValidModel(request.resource.data);
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
     }
 
     match /test/connection {

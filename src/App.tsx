@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Copy, Check, FileSpreadsheet, ExternalLink, FileText, Sparkles, Loader2, Search, Save, User, AlertCircle, X, LogIn, LogOut, Trash2 } from 'lucide-react';
+import { Download, Copy, Check, FileSpreadsheet, ExternalLink, FileText, Sparkles, Loader2, Search, Save, User, AlertCircle, X, LogIn, LogOut, Trash2, Share2, Eye } from 'lucide-react';
 import { TableRow } from './data';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
@@ -162,6 +162,17 @@ function App() {
   const [newModelName, setNewModelName] = useState('');
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [sharedId, setSharedId] = useState<string | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  useEffect(() => {
+    // Check for shared view ID in URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const viewId = urlParams.get('v');
+    if (viewId) {
+      setSharedId(viewId);
+    }
+  }, []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -215,6 +226,30 @@ function App() {
       }, (error) => {
         handleFirestoreError(error, OperationType.LIST, path);
       });
+    } else if (sharedId) {
+      // Shared View Mode (ReadOnly)
+      const path = 'models';
+      const q = query(collection(db, path), where('userId', '==', sharedId));
+      unsubscribe = onSnapshot(q, (snapshot) => {
+        const firestoreModels = snapshot.docs.map(doc => {
+          const data = doc.data();
+          return {
+            ...data,
+            id: data.id ? data.id.toString() : doc.id
+          } as ModelProfile;
+        });
+        
+        const sortedModels = firestoreModels.sort((a, b) => {
+          const idA = a.id.toString();
+          const idB = b.id.toString();
+          return idA.localeCompare(idB, undefined, {numeric: true, sensitivity: 'base'});
+        });
+
+        setModels(sortedModels);
+        localStorage.setItem('webcam_models', JSON.stringify(sortedModels));
+      }, (error) => {
+        console.error("Error fetching shared models:", error);
+      });
     } else {
       // Use LocalStorage fallback for guests
       fetchModels();
@@ -244,6 +279,16 @@ function App() {
       setSelectedModelId(lastSelectedId);
     }
   }, []);
+
+  const copyShareLink = () => {
+    if (!user) return;
+    const baseUrl = window.location.origin + window.location.pathname;
+    const shareUrl = `${baseUrl}?v=${user.uid}`;
+    navigator.clipboard.writeText(shareUrl).then(() => {
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    });
+  };
 
   const login = async () => {
     try {
@@ -674,7 +719,24 @@ function App() {
         <header className="mb-12 border-b border-red-900/20 pb-10 relative">
           <div className="absolute -top-20 -left-20 w-96 h-96 bg-red-600/5 blur-[150px] rounded-full pointer-events-none"></div>
           
-          <div className="flex justify-end mb-8">
+          <div className="flex justify-end mb-8 items-center gap-4">
+            {sharedId && !user && (
+              <div className="flex items-center gap-2 bg-red-600/10 px-4 py-2 rounded-full border border-red-600/20">
+                <Eye size={14} className="text-red-600" />
+                <span className="text-[10px] text-red-500 font-mono uppercase tracking-widest font-bold">Vista de Solo Lectura</span>
+              </div>
+            )}
+
+            {user && (
+              <button 
+                onClick={copyShareLink}
+                className="flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/10 text-gray-400 rounded-full font-mono text-[10px] uppercase tracking-widest hover:bg-white/10 hover:text-white transition-all shadow-sm"
+              >
+                {linkCopied ? <Check size={12} className="text-emerald-500" /> : <Share2 size={12} />}
+                {linkCopied ? 'Enlace Copiado' : 'Copiar Enlace Maestro'}
+              </button>
+            )}
+
             {user ? (
               <div className="flex items-center gap-4 bg-black/40 p-2 pl-4 rounded-full border border-white/5">
                 <div className="flex flex-col items-end">
@@ -727,19 +789,23 @@ function App() {
               <div className="flex justify-between items-center">
                 <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">01. Modelo</label>
                 <div className="flex gap-4 items-center">
-                  <button 
-                    onClick={deleteModel}
-                    className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
-                    title="Eliminar modelo seleccionada"
-                  >
-                    Eliminar
-                  </button>
-                  <button 
-                    onClick={() => setIsAddingModel(!isAddingModel)}
-                    className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
-                  >
-                    {isAddingModel ? 'Cancelar' : '+ Nueva'}
-                  </button>
+                  {user && (
+                    <button 
+                      onClick={deleteModel}
+                      className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
+                      title="Eliminar modelo seleccionada"
+                    >
+                      Eliminar
+                    </button>
+                  )}
+                  {user && (
+                    <button 
+                      onClick={() => setIsAddingModel(!isAddingModel)}
+                      className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
+                    >
+                      {isAddingModel ? 'Cancelar' : '+ Nueva'}
+                    </button>
+                  )}
                 </div>
               </div>
               
@@ -812,14 +878,16 @@ function App() {
             <div className="flex flex-col gap-4 md:col-span-2 lg:col-span-2">
               <div className="flex justify-between items-center">
                 <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">04. Perfil / Descripción</label>
-                <button 
-                  onClick={saveModelDescription}
-                  disabled={savingModel || !selectedModelId}
-                  className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono flex items-center gap-2"
-                >
-                  {savingModel ? <Loader2 size={10} className="animate-spin" /> : <Save size={10} />}
-                  Guardar Perfil
-                </button>
+                {user && (
+                  <button 
+                    onClick={saveModelDescription}
+                    disabled={savingModel || !selectedModelId}
+                    className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono flex items-center gap-2"
+                  >
+                    {savingModel ? <Loader2 size={10} className="animate-spin" /> : <Save size={10} />}
+                    Guardar Perfil
+                  </button>
+                )}
               </div>
               <div className="relative">
                 <textarea 
@@ -843,14 +911,16 @@ function App() {
                     rows={5}
                     className="w-full bg-[#0a0a0a] border border-white/5 p-4 pr-16 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg placeholder:text-gray-700"
                   />
-                  <button 
-                    onClick={saveModelDescription}
-                    disabled={savingModel}
-                    className="absolute right-4 top-4 p-2 text-gray-500 hover:text-red-600 transition-all"
-                    title="Guardar Perfil y Concepto"
-                  >
-                    {savingModel ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
-                  </button>
+                  {user && (
+                    <button 
+                      onClick={saveModelDescription}
+                      disabled={savingModel}
+                      className="absolute right-4 top-4 p-2 text-gray-500 hover:text-red-600 transition-all"
+                      title="Guardar Perfil y Concepto"
+                    >
+                      {savingModel ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
+                    </button>
+                  )}
                 </div>
                 <button 
                   onClick={generateContent}
