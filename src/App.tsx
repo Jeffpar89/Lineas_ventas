@@ -4,7 +4,7 @@ import { TableRow } from './data';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
-import { auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged, collection, query, onSnapshot, setDoc, doc, deleteDoc, getDoc, User as FirebaseUser, handleFirestoreError, OperationType } from './firebase';
+import { auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged, collection, query, onSnapshot, setDoc, doc, deleteDoc, getDoc, User as FirebaseUser, handleFirestoreError, OperationType, where } from './firebase';
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: any }> {
   constructor(props: { children: React.ReactNode }) {
@@ -54,45 +54,59 @@ interface ModelProfile {
   name: string;
   description: string;
   concept: string;
+  profile: string;
+  category: string;
   userId?: string;
 }
 
 const DEFAULT_MODELS: ModelProfile[] = [
   { 
-    id: 1,
+    id: "1",
     name: "Ari Espinoza", 
     description: "Modelo de belleza física excepcional y estilo peculiar, enfocada en shows sexuales explícitos de alto impacto, dominando categorías intensas como anal, garganta profunda, fetiche de pies y sexo en general.",
-    concept: "Dominación intensa y fetiche de pies"
+    concept: "Dominación intensa y fetiche de pies",
+    profile: "18 a 25",
+    category: "HardCore"
   },
   { 
-    id: 2,
+    id: "2",
     name: "Jeimi Escobar", 
     description: "Atractiva y elegante modelo madura (MILF); su especialidad es la combinación de fetiches de humillación (Cornudo) con la adoración de pies, medias y tacones.",
-    concept: "Humillación sofisticada (Cuckold) y adoración de pies"
+    concept: "Humillación sofisticada (Cuckold) y adoración de pies",
+    profile: "35 o más",
+    category: "Mistress"
   },
   { 
-    id: 3,
+    id: "3",
     name: "Liliana Delgado", 
     description: "Modelo Teen BBW de rostro muy bello; su oferta combina shows de senos y blowjobs con una línea de fetiches de pies y cornudos",
-    concept: "Versatilidad BBW: Senos, Blowjobs y Dominación Kinky"
+    concept: "Versatilidad BBW: Senos, Blowjobs y Dominación Kinky",
+    profile: "18 a 25",
+    category: "BBW"
   },
   { 
-    id: 4,
+    id: "4",
     name: "Natalia Novoa", 
     description: "Modelo Teen enfocada en el Glamour; irradia sofisticación y alta estética para nichos de exclusividad y adoración VIP (Medias, Tacones y Diosa).",
-    concept: "Elegancia de alta gama: Diosa en medias y tacones"
+    concept: "Elegancia de alta gama: Diosa en medias y tacones",
+    profile: "18 a 25",
+    category: "Glamour"
   },
   {
-    id: 5,
+    id: "5",
     name: "Lorena Lopez",
     description: "Modelo Curvy muy experimentada y flexible que contrasta un look tierno e intelectual con shows de altísima intensidad, destacando sus senos grandes, el uso magistral de la fuckmachine y el contenido sexual de calidad, se identifican patrones de anal, blowjob, deepthroat y fetiches; como contenido exclusivo.",
-    concept: "Contraste intelectual y shows de alta intensidad con fuckmachine"
+    concept: "Contraste intelectual y shows de alta intensidad con fuckmachine",
+    profile: "25 - 35",
+    category: "Curvy"
   },
   {
-    id: 6,
+    id: "6",
     name: "Valentina Botia",
     description: "Modelo de curvas impactantes que monetiza nichos explícitos de altísimo valor (anal y exclusividad de lactancia), complementando su intensa oferta con fetiche de pies, blowjob y juegos de roles.",
-    concept: "Monetización de nichos explícitos de alto valor (Anal, Lactancia y Fetiches)"
+    concept: "Monetización de nichos explícitos de alto valor (Anal, Lactancia y Fetiches)",
+    profile: "25 - 35",
+    category: "Curvy"
   }
 ];
 
@@ -165,16 +179,19 @@ function App() {
     if (user) {
       // Sync with Firestore
       const path = 'models';
-      const q = query(collection(db, path));
+      const q = query(collection(db, path), where('userId', '==', user.uid));
+      
       unsubscribe = onSnapshot(q, async (snapshot) => {
-        const firestoreModels = snapshot.docs
-          .map(doc => ({ ...doc.data() } as ModelProfile));
+        const firestoreModels = snapshot.docs.map(doc => {
+          const data = doc.data();
+          return {
+            ...data,
+            id: data.id ? data.id.toString() : doc.id
+          } as ModelProfile;
+        });
         
-        // Filter models belonging to this user
-        const userModels = firestoreModels.filter(m => m.userId === user.uid);
-        
-        // If empty in cloud, seed with defaults ONCE
-        if (userModels.length === 0 && !snapshot.metadata.fromCache) {
+        // If empty in cloud and explicitly synced from server (not just empty cache), seed with defaults
+        if (snapshot.empty && !snapshot.metadata.fromCache) {
           const initialModels = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString(), userId: user.uid }));
           for (const m of initialModels) {
             try {
@@ -186,7 +203,7 @@ function App() {
           return;
         }
 
-        setModels(userModels.sort((a, b) => {
+        setModels(firestoreModels.sort((a, b) => {
           const idA = a.id.toString();
           const idB = b.id.toString();
           return idA.localeCompare(idB, undefined, {numeric: true, sensitivity: 'base'});
@@ -204,16 +221,18 @@ function App() {
     };
   }, [user, isAuthReady]);
 
-  // Sync selection details
+  // Sync selection details - ONLY when selectedModelId changes to prevent overwriting typing
   useEffect(() => {
     if (selectedModelId && models.length > 0) {
       const model = models.find(m => m.id.toString() === selectedModelId.toString());
       if (model) {
-        setModelDescription(model.description);
+        setProfile(model.profile || '18 a 25');
+        setSelectedCategory(model.category || 'Natural');
+        setModelDescription(model.description || '');
         setModelConcept(model.concept || '');
       }
     }
-  }, [selectedModelId, models]);
+  }, [selectedModelId]); // Removed 'models' from dependencies to avoid overwrite while typing
 
   useEffect(() => {
     const lastSelectedId = localStorage.getItem('last_selected_model_id');
@@ -302,18 +321,20 @@ function App() {
     try {
       if (user) {
         const modelRef = doc(db, 'models', selectedModelId.toString());
-        const currentModel = models.find(m => m.id === selectedModelId);
+        const currentModel = models.find(m => m.id.toString() === selectedModelId.toString());
         await setDoc(modelRef, {
           ...currentModel,
           id: selectedModelId.toString(),
           description: modelDescription,
           concept: modelConcept,
+          profile: profile,
+          category: selectedCategory,
           userId: user.uid
         }, { merge: true });
       } else {
         const updatedModels = models.map(m => 
-          m.id === selectedModelId 
-            ? { ...m, description: modelDescription, concept: modelConcept } 
+          m.id.toString() === selectedModelId.toString() 
+            ? { ...m, description: modelDescription, concept: modelConcept, profile: profile, category: selectedCategory } 
             : m
         );
         setModels(updatedModels);
@@ -343,6 +364,8 @@ function App() {
         name: newModelName,
         description: '',
         concept: '',
+        profile: profile,
+        category: selectedCategory,
         userId: user?.uid
       };
       

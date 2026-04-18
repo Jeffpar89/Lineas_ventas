@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, query, deleteDoc, getDocFromServer, updateDoc, addDoc } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, query, deleteDoc, getDocFromServer, updateDoc, addDoc, where } from 'firebase/firestore';
 import { getAnalytics } from "firebase/analytics";
 
 // Configuración real de Firebase proporcionada por el usuario
@@ -85,5 +85,5 @@ async function testConnection() {
 }
 testConnection();
 
-export { signInWithPopup, signOut, onAuthStateChanged, collection, query, onSnapshot, setDoc, doc, deleteDoc, getDoc, updateDoc, addDoc };
+export { signInWithPopup, signOut, onAuthStateChanged, collection, query, onSnapshot, setDoc, doc, deleteDoc, getDoc, updateDoc, addDoc, where };
 export type { User };
