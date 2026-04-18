@@ -166,25 +166,49 @@ function App() {
       // Sync with Firestore
       const path = 'models';
       const q = query(collection(db, path));
-      unsubscribe = onSnapshot(q, (snapshot) => {
+      unsubscribe = onSnapshot(q, async (snapshot) => {
         const firestoreModels = snapshot.docs
-          .map(doc => ({ ...doc.data() } as ModelProfile))
-          .filter(m => m.userId === user.uid);
+          .map(doc => ({ ...doc.data() } as ModelProfile));
         
-        // Merge with defaults if they don't exist in Firestore
-        const mergedModels = [...firestoreModels];
-        DEFAULT_MODELS.forEach(def => {
-          if (!mergedModels.find(m => m.id === def.id || m.id === def.id.toString())) {
-            mergedModels.push({ ...def, id: def.id.toString(), userId: user.uid });
+        // Filter models belonging to this user or seed them if empty
+        const userModels = firestoreModels.filter(m => m.userId === user.uid);
+        
+        if (userModels.length === 0 && snapshot.metadata.fromCache === false) {
+          // Case: First login or empty cloud. Seed from localStorage or defaults.
+          const savedModels = localStorage.getItem('webcam_models');
+          let modelsToSeed: ModelProfile[] = [];
+          
+          if (savedModels) {
+            try {
+              const parsed = JSON.parse(savedModels);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                modelsToSeed = parsed.map(m => ({ ...m, userId: user.uid }));
+              }
+            } catch (e) {
+              console.error("Error parsing local models for migration", e);
+            }
           }
-        });
-        
-        setModels(mergedModels.sort((a, b) => {
-          const idA = Number(a.id);
-          const idB = Number(b.id);
-          if (idA < idB) return -1;
-          if (idA > idB) return 1;
-          return 0;
+          
+          if (modelsToSeed.length === 0) {
+            modelsToSeed = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString(), userId: user.uid }));
+          }
+
+          // Batch upload (simplified with separate calls)
+          for (const m of modelsToSeed) {
+            try {
+              await setDoc(doc(db, 'models', m.id.toString()), m);
+            } catch (se) {
+              console.error("Error seeding model:", m.name, se);
+            }
+          }
+          // The next snapshot will contain the seeded models
+          return;
+        }
+
+        setModels(userModels.sort((a, b) => {
+          const idA = Number(a.id) || 0;
+          const idB = Number(b.id) || 0;
+          return idA - idB;
         }));
       }, (error) => {
         handleFirestoreError(error, OperationType.LIST, path);
