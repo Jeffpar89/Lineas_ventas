@@ -7,6 +7,26 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Defensive hack to prevent libraries from crashing when trying to overwrite window.fetch
+      (function() {
+        try {
+          const originalFetch = window.fetch;
+          // If it's already a getter-only, we try to redefine it to handle assignment gracefully
+          Object.defineProperty(window, 'fetch', {
+            get: function() { return originalFetch; },
+            set: function() { console.warn('A library tried to overwrite window.fetch. This was prevented to avoid a crash.'); },
+            configurable: true
+          });
+          
+          if (typeof window.global === 'undefined') {
+            window.global = window;
+          }
+        } catch (e) {
+          console.error('Fetch protection failed:', e);
+        }
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

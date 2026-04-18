@@ -206,7 +206,12 @@ function App() {
           const initialModels = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString(), userId: user.uid }));
           for (const m of initialModels) {
             try {
-              await setDoc(doc(db, 'models', m.id.toString()), m);
+              // Using a composite ID (UID_ModelID) to prevent collisions between different users
+              const compositeId = `${user.uid}_${m.id}`;
+              await setDoc(doc(db, 'models', compositeId), {
+                ...m,
+                id: compositeId // Update internal ID to match the doc ID for consistency
+              });
             } catch (se) {
               console.error("Error seeding default model:", se);
             }
@@ -221,6 +226,15 @@ function App() {
         });
 
         setModels(sortedModels);
+        
+        // Ensure a model is selected if none is currently selected
+        if (sortedModels.length > 0) {
+          setSelectedModelId(prev => {
+            if (prev && sortedModels.some(m => m.id.toString() === prev.toString())) return prev;
+            return sortedModels[0].id;
+          });
+        }
+
         // Sync to LocalStorage for guest mode persistence
         localStorage.setItem('webcam_models', JSON.stringify(sortedModels));
       }, (error) => {
@@ -229,8 +243,17 @@ function App() {
     } else if (sharedId) {
       // Shared View Mode (ReadOnly)
       const path = 'models';
-      const q = query(collection(db, path), where('userId', '==', sharedId));
+      // We check for both explicitly assigned userId and potential legacy documents (though filtered for safety)
+      const q = query(collection(db, path), where('userId', '==', String(sharedId)));
+      
+      console.log("Attempting to fetch shared models for ID:", sharedId);
+
       unsubscribe = onSnapshot(q, (snapshot) => {
+        if (snapshot.empty) {
+          console.warn("No models found for this shared ID.");
+          // Fallback to defaults or local if empty, but for shared view we usually expect data
+        }
+
         const firestoreModels = snapshot.docs.map(doc => {
           const data = doc.data();
           return {
@@ -240,15 +263,25 @@ function App() {
         });
         
         const sortedModels = firestoreModels.sort((a, b) => {
-          const idA = a.id.toString();
-          const idB = b.id.toString();
-          return idA.localeCompare(idB, undefined, {numeric: true, sensitivity: 'base'});
+          const nameA = a.name.toLowerCase();
+          const nameB = b.name.toLowerCase();
+          return nameA.localeCompare(nameB);
         });
 
+        console.log(`Fetched ${sortedModels.length} shared models.`);
         setModels(sortedModels);
+
+        // Ensure a model is selected if none is currently selected
+        if (sortedModels.length > 0) {
+          setSelectedModelId(prev => {
+            if (prev && sortedModels.some(m => m.id.toString() === prev.toString())) return prev;
+            return sortedModels[0].id;
+          });
+        }
+        
         localStorage.setItem('webcam_models', JSON.stringify(sortedModels));
       }, (error) => {
-        console.error("Error fetching shared models:", error);
+        console.error("Critical Error fetching shared models:", error);
       });
     } else {
       // Use LocalStorage fallback for guests
@@ -260,7 +293,7 @@ function App() {
     };
   }, [user, isAuthReady]);
 
-  // Sync selection details - ONLY when selectedModelId changes to prevent overwriting typing
+  // 1. Sync on selection change (to load the model data into state)
   useEffect(() => {
     if (selectedModelId && models.length > 0) {
       const model = models.find(m => m.id.toString() === selectedModelId.toString());
@@ -271,7 +304,24 @@ function App() {
         setModelConcept(model.concept || '');
       }
     }
-  }, [selectedModelId]); // Removed 'models' from dependencies to avoid overwrite while typing
+  }, [selectedModelId]);
+
+  // 2. Real-time sync ONLY for readers/monitors (when they are not logged in)
+  // This ensures that if the Master changes a description, the Monitor sees the update instantly.
+  useEffect(() => {
+    if (!user && selectedModelId && models.length > 0) {
+      const model = models.find(m => m.id.toString() === selectedModelId.toString());
+      if (model) {
+        setProfile(model.profile || '18 a 25');
+        setSelectedCategory(model.category || 'Natural');
+        setModelDescription(model.description || '');
+        setModelConcept(model.concept || '');
+      }
+    }
+  }, [models, user]);
+
+  // 3. Status indicator for shared view
+  const isReadOnly = sharedId && !user;
 
   useEffect(() => {
     const lastSelectedId = localStorage.getItem('last_selected_model_id');
@@ -370,15 +420,19 @@ function App() {
       if (user) {
         const modelRef = doc(db, 'models', selectedModelId.toString());
         const currentModel = models.find(m => m.id.toString() === selectedModelId.toString());
-        await setDoc(modelRef, {
-          ...currentModel,
+        
+        // Final safety check to ensure we have valid data before writing
+        const modelData = {
           id: selectedModelId.toString(),
+          name: currentModel?.name || 'Modelo',
           description: modelDescription,
           concept: modelConcept,
           profile: profile,
           category: selectedCategory,
           userId: user.uid
-        }, { merge: true });
+        };
+
+        await setDoc(modelRef, modelData, { merge: true });
       } else {
         const updatedModels = models.map(m => 
           m.id.toString() === selectedModelId.toString() 
@@ -720,10 +774,17 @@ function App() {
           <div className="absolute -top-20 -left-20 w-96 h-96 bg-red-600/5 blur-[150px] rounded-full pointer-events-none"></div>
           
           <div className="flex justify-end mb-8 items-center gap-4">
-            {sharedId && !user && (
+            {isReadOnly && (
               <div className="flex items-center gap-2 bg-red-600/10 px-4 py-2 rounded-full border border-red-600/20">
                 <Eye size={14} className="text-red-600" />
                 <span className="text-[10px] text-red-500 font-mono uppercase tracking-widest font-bold">Vista de Solo Lectura</span>
+              </div>
+            )}
+            
+            {sharedId && !user && models.length === 0 && (
+              <div className="flex items-center gap-2 bg-yellow-600/10 px-4 py-2 rounded-full border border-yellow-600/20">
+                <AlertCircle size={14} className="text-yellow-600" />
+                <span className="text-[10px] text-yellow-500 font-mono uppercase tracking-widest">No se encontraron modelos</span>
               </div>
             )}
 
@@ -849,7 +910,8 @@ function App() {
                 <select 
                   value={profile}
                   onChange={(e) => setProfile(e.target.value)}
-                  className="w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg appearance-none cursor-pointer hover:bg-black"
+                  disabled={isReadOnly}
+                  className={`w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg appearance-none ${isReadOnly ? 'cursor-default' : 'cursor-pointer hover:bg-black'}`}
                 >
                   {PROFILES.map(p => <option key={p} value={p}>{p}</option>)}
                 </select>
@@ -865,7 +927,8 @@ function App() {
                 <select 
                   value={selectedCategory}
                   onChange={(e) => setSelectedCategory(e.target.value)}
-                  className="w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg appearance-none cursor-pointer hover:bg-black"
+                  disabled={isReadOnly}
+                  className={`w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg appearance-none ${isReadOnly ? 'cursor-default' : 'cursor-pointer hover:bg-black'}`}
                 >
                   {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
@@ -893,9 +956,10 @@ function App() {
                 <textarea 
                   value={modelDescription}
                   onChange={(e) => setModelDescription(e.target.value)}
-                  placeholder="Rasgos, personalidad, fetiches específicos..."
+                  readOnly={isReadOnly}
+                  placeholder={isReadOnly ? "Descripción del perfil..." : "Rasgos, personalidad, fetiches específicos..."}
                   rows={5}
-                  className="w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg placeholder:text-gray-700"
+                  className={`w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg placeholder:text-gray-700 ${isReadOnly ? 'cursor-default' : ''}`}
                 />
               </div>
             </div>
@@ -907,9 +971,10 @@ function App() {
                   <textarea 
                     value={modelConcept}
                     onChange={(e) => setModelConcept(e.target.value)}
-                    placeholder="Ej: Spa de pies, sesión de ballet, dominación suave..."
+                    readOnly={isReadOnly}
+                    placeholder={isReadOnly ? "Concepto del día..." : "Ej: Spa de pies, sesión de ballet, dominación suave..."}
                     rows={5}
-                    className="w-full bg-[#0a0a0a] border border-white/5 p-4 pr-16 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg placeholder:text-gray-700"
+                    className={`w-full bg-[#0a0a0a] border border-white/5 p-4 pr-16 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg placeholder:text-gray-700 ${isReadOnly ? 'cursor-default' : ''}`}
                   />
                   {user && (
                     <button 

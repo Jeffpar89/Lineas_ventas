@@ -43,7 +43,7 @@ service cloud.firestore {
     }
 
     match /models/{modelId} {
-      // Allow anyone to read/list models (needed for sharing via link)
+      // Allow anyone to read and list models (critical for sharing)
       allow read, list: if true;
       
       // Only authenticated owners can create, update or delete
