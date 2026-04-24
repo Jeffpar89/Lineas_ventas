@@ -164,10 +164,11 @@ function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [sharedId, setSharedId] = useState<string | null>(() => {
-    // Detect shared view ID in URL immediately to avoid race conditions
     if (typeof window !== 'undefined') {
       const urlParams = new URLSearchParams(window.location.search);
-      return urlParams.get('v');
+      const guestId = urlParams.get('v');
+      if (guestId) console.log("[SharedMode] Initialized with ID:", guestId);
+      return guestId;
     }
     return null;
   });
@@ -185,8 +186,12 @@ function App() {
     return () => unsubscribe();
   }, []);
 
+  // 2. Real-time Cloud Sync
   useEffect(() => {
-    if (!isAuthReady) return;
+    if (!isAuthReady) {
+      console.log("[Sync] Waiting for Auth...");
+      return;
+    }
 
     let unsubscribe: () => void;
     
@@ -194,25 +199,24 @@ function App() {
     // 1. If we have a 'v' in URL, it's a shared view - show that user's data.
     // 2. Otherwise, if logged in, show current user's data.
     const effectiveUserId = sharedId || (user ? user.uid : null);
-    const isSharedMode = !!sharedId;
     const isOwner = !!user && (!sharedId || user.uid === sharedId);
 
     if (!effectiveUserId) {
+      console.log("[Sync] No user ID target. Loading local defaults.");
       if (isAuthReady) {
-        fetchModels();
+        fetchModels(); 
         setSyncingCloud(false);
       }
       return;
     }
 
     setSyncingCloud(true);
-    console.log(`[Sync] Target UID: ${effectiveUserId} | IsOwner: ${isOwner}`);
+    console.log(`[Sync] Initializing Firestore Sync | Target: ${effectiveUserId} | Role: ${isOwner ? 'Owner' : 'Viewer'}`);
     
-    const path = 'models';
-    const q = query(collection(db, path), where('userId', '==', String(effectiveUserId)));
+    const q = query(collection(db, 'models'), where('userId', '==', String(effectiveUserId)));
     
-    unsubscribe = onSnapshot(q, async (snapshot) => {
-      console.log(`[Sync] Snapshot received. Empty: ${snapshot.empty} | Size: ${snapshot.size}`);
+    unsubscribe = onSnapshot(q, (snapshot) => {
+      console.log(`[Sync] Snapshot update | Docs: ${snapshot.size}`);
 
       const firestoreModels = snapshot.docs.map(doc => {
         const data = doc.data();
@@ -222,76 +226,34 @@ function App() {
         } as ModelProfile;
       });
       
-      // MIGRACIÓN Y SEEDING (Solo para el dueño si la nube está vacía)
-      if (snapshot.empty && !snapshot.metadata.fromCache && isOwner && user) {
-        console.log("[Sync] Cloud empty. Checking for migration...");
-        
-        const localData = localStorage.getItem('webcam_models');
-        let modelsToSync: ModelProfile[] = [];
-        
-        if (localData) {
-          try {
-            const parsed = JSON.parse(localData);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              modelsToSync = parsed.map((m: any) => ({
-                ...m,
-                id: m.id.toString(),
-                userId: user.uid
-              }));
-              console.log(`[Sync] Migrating ${modelsToSync.length} local models to Cloud.`);
-            }
-          } catch (e) {
-            console.error("[Sync] Local data parse error:", e);
-          }
-        }
-        
-        if (modelsToSync.length === 0) {
-          console.log("[Sync] No local data. Seeding defaults...");
-          modelsToSync = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString(), userId: user.uid }));
-        }
-        
-        for (const m of modelsToSync) {
-          try {
-            const docId = m.id.toString().includes(user.uid) ? m.id.toString() : `${user.uid}_${m.id}`;
-            await setDoc(doc(db, 'models', docId), {
-              ...m,
-              id: docId,
-              userId: user.uid
-            });
-          } catch (se) {
-            console.error("[Sync] Error writing model:", se);
-          }
-        }
-        // Don't setSyncingCloud(false) yet, wait for the next snapshot triggered by writes
-        return; 
-      }
-
       const sortedModels = firestoreModels.sort((a, b) => {
         const nameA = a.name.toLowerCase();
         const nameB = b.name.toLowerCase();
         return nameA.localeCompare(nameB, undefined, {numeric: true, sensitivity: 'base'});
       });
 
-      console.log(`[Sync] Setting ${sortedModels.length} models.`);
       setModels(sortedModels);
       setSyncingCloud(false);
       
+      // Auto-selection logic
       if (sortedModels.length > 0) {
         setSelectedModelId(current => {
-          const exists = sortedModels.some(m => m.id.toString() === current?.toString());
-          if (exists) return current;
-          return sortedModels[0].id;
+          if (!current) return sortedModels[0].id;
+          const exists = sortedModels.some(m => m.id.toString() === current.toString());
+          return exists ? current : sortedModels[0].id;
         });
+      } else {
+        setSelectedModelId(null);
       }
 
       if (isOwner) {
         localStorage.setItem('webcam_models', JSON.stringify(sortedModels));
       }
     }, (error) => {
-      console.error("[Sync] Error critical:", error);
+      console.error("[Sync] Firestore listener error:", error);
       setSyncingCloud(false);
       if (isOwner) {
-        handleFirestoreError(error, OperationType.LIST, path);
+        handleFirestoreError(error, OperationType.LIST, 'models');
       }
     });
 
@@ -299,6 +261,54 @@ function App() {
       if (unsubscribe) unsubscribe();
     };
   }, [user, isAuthReady, sharedId]);
+
+  // 2.1 Dedicated Migration Trigger (Only for Owners)
+  useEffect(() => {
+    const runMigration = async () => {
+      if (!isAuthReady || !user || syncingCloud || sharedId) return;
+      if (models.length > 0) return; // Already have data in cloud
+
+      console.log("[Migration] Cloud is empty for this owner. Checking local storage...");
+      const localData = localStorage.getItem('webcam_models');
+      let modelsToSync: ModelProfile[] = [];
+      
+      if (localData) {
+        try {
+          const parsed = JSON.parse(localData);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            modelsToSync = parsed.map((m: any) => ({
+              ...m,
+              id: m.id.toString(),
+              userId: user.uid
+            }));
+          }
+        } catch (e) {
+          console.error("[Migration] Error parsing local data:", e);
+        }
+      }
+      
+      if (modelsToSync.length === 0) {
+        console.log("[Migration] No local data found. Seeding default models...");
+        modelsToSync = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString(), userId: user.uid }));
+      }
+
+      console.log(`[Migration] pushing ${modelsToSync.length} models to Cloud...`);
+      for (const m of modelsToSync) {
+        try {
+          const docId = m.id.toString().includes(user.uid) ? m.id.toString() : `${user.uid}_${m.id}`;
+          await setDoc(doc(db, 'models', docId), {
+            ...m,
+            id: docId,
+            userId: user.uid
+          });
+        } catch (e) {
+          console.error("[Migration] Write error:", e);
+        }
+      }
+    };
+
+    runMigration();
+  }, [user, isAuthReady, syncingCloud, models.length]);
 
   // Sync logic for fields
   useEffect(() => {
@@ -339,11 +349,23 @@ function App() {
   const copyShareLink = () => {
     if (!user) return;
     const baseUrl = window.location.origin + window.location.pathname;
+    // Usamos el UID directamente pero con un sufijo de seguridad simple
     const shareUrl = `${baseUrl}?v=${user.uid}`;
-    navigator.clipboard.writeText(shareUrl).then(() => {
-      setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 2000);
-    });
+    
+    // Mostramos log para depuración
+    console.log("[Share] Generated Link:", shareUrl);
+    
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(shareUrl).then(() => {
+        setLinkCopied(true);
+        setTimeout(() => setLinkCopied(false), 2000);
+      }).catch(err => {
+        console.error("[Share] Clipboard error:", err);
+        alert("Enlace: " + shareUrl);
+      });
+    } else {
+      alert("Enlace Maestro: " + shareUrl);
+    }
   };
 
   const handleLogin = async () => {
