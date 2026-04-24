@@ -158,6 +158,7 @@ function App() {
   const [models, setModels] = useState<ModelProfile[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string | number | null>(null);
   const [savingModel, setSavingModel] = useState(false);
+  const [syncingCloud, setSyncingCloud] = useState(true);
   const [isAddingModel, setIsAddingModel] = useState(false);
   const [newModelName, setNewModelName] = useState('');
   const [user, setUser] = useState<FirebaseUser | null>(null);
@@ -190,15 +191,18 @@ function App() {
     // 2. Otherwise, if logged in, show current user's data.
     const effectiveUserId = sharedId || (user ? user.uid : null);
     const isSharedMode = !!sharedId;
-    const isOwner = user && (!sharedId || user.uid === sharedId);
+    const isOwner = !!user && (!sharedId || user.uid === sharedId);
 
-    // Fetch from LocalStorage if neither logged in nor shared view
     if (!effectiveUserId) {
-      fetchModels();
+      if (isAuthReady) {
+        fetchModels();
+        setSyncingCloud(false);
+      }
       return;
     }
 
-    console.log(`📡 Syncing data for: ${effectiveUserId} | Mode: ${isSharedMode ? 'Shared' : 'Private'} | Owner: ${isOwner}`);
+    setSyncingCloud(true);
+    console.log(`Setting up sync for: ${effectiveUserId} | Owner: ${isOwner}`);
     
     const path = 'models';
     const q = query(collection(db, path), where('userId', '==', String(effectiveUserId)));
@@ -212,23 +216,50 @@ function App() {
         } as ModelProfile;
       });
       
-      // Seed ONLY if it's the owner and database is truly empty
+      // MIGRACIÓN Y SEEDING
       if (snapshot.empty && !snapshot.metadata.fromCache && isOwner && user) {
-        console.log("🌱 First time user detected. Seeding defaults...");
-        const initialModels = DEFAULT_MODELS.map(m => ({ ...m, userId: user.uid }));
-        for (const m of initialModels) {
+        console.log("No cloud data found. Attempting migration or seeding...");
+        
+        // 1. Try to get models from LocalStorage first (migration)
+        const localData = localStorage.getItem('webcam_models');
+        let modelsToSync: ModelProfile[] = [];
+        
+        if (localData) {
           try {
-            const compositeId = `${user.uid}_${m.id}`;
-            await setDoc(doc(db, 'models', compositeId), {
+            const parsed = JSON.parse(localData);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              modelsToSync = parsed.map((m: any) => ({
+                ...m,
+                id: m.id.toString(),
+                userId: user.uid
+              }));
+              console.log("Migration: Found local models to push to cloud.");
+            }
+          } catch (e) {
+            console.error("Migration parse error:", e);
+          }
+        }
+        
+        // 2. If no local data, use defaults
+        if (modelsToSync.length === 0) {
+          console.log("Seeding with defaults.");
+          modelsToSync = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString(), userId: user.uid }));
+        }
+        
+        // 3. Batch write (or sequential setDoc)
+        for (const m of modelsToSync) {
+          try {
+            const docId = m.userId === user.uid ? m.id.toString() : `${user.uid}_${m.id}`;
+            await setDoc(doc(db, 'models', docId), {
               ...m,
-              id: compositeId,
+              id: docId,
               userId: user.uid
             });
           } catch (se) {
-            console.error("Error seeding:", se);
+            console.error("Error writing model during sync:", se);
           }
         }
-        return;
+        return; // onSnapshot will trigger again after writes
       }
 
       const sortedModels = firestoreModels.sort((a, b) => {
@@ -238,25 +269,23 @@ function App() {
       });
 
       setModels(sortedModels);
+      setSyncingCloud(false);
       
-      // Selection persistence logic
+      // Auto-selection of first model if none valid
       if (sortedModels.length > 0) {
-        setSelectedModelId(prevId => {
-          const stringPrevId = prevId?.toString();
-          const exists = sortedModels.some(m => m.id.toString() === stringPrevId);
-          if (exists) return prevId;
-          
-          // Fallback to first one
+        setSelectedModelId(current => {
+          const exists = sortedModels.some(m => m.id.toString() === current?.toString());
+          if (exists) return current;
           return sortedModels[0].id;
         });
       }
 
-      // Persist local copy
-      if (!isSharedMode || isOwner) {
+      if (isOwner) {
         localStorage.setItem('webcam_models', JSON.stringify(sortedModels));
       }
     }, (error) => {
-      console.error("❌ Sync Error:", error);
+      console.error("Critical Sync Error:", error);
+      setSyncingCloud(false);
       if (isOwner) {
         handleFirestoreError(error, OperationType.LIST, path);
       }
@@ -267,21 +296,19 @@ function App() {
     };
   }, [user, isAuthReady, sharedId]);
 
-  // Unified Effect: Updates all UI fields whenever models or selection change (Real-time sync)
+  // Unified Real-time field sync: Fields follow the models state
   useEffect(() => {
     if (!selectedModelId || models.length === 0) return;
-
-    const currentModel = models.find(m => m.id.toString() === selectedModelId.toString());
-    if (currentModel) {
-      // Only update if current user is NOT the owner OR if we are in shared mode
-      // This allows masters to see real-time updates from other masters if needed
-      // But mostly it ensures visitors see what the master is typing/saving
-      setProfile(currentModel.profile || '18 a 25');
-      setSelectedCategory(currentModel.category || 'Natural');
-      setModelDescription(currentModel.description || '');
-      setModelConcept(currentModel.concept || '');
+    
+    const activeModel = models.find(m => m.id.toString() === selectedModelId.toString());
+    if (activeModel) {
+      // For shared monitors OR when switching models, we update the local state from the models array
+      setProfile(activeModel.profile || '18 a 25');
+      setSelectedCategory(activeModel.category || 'Natural');
+      setModelDescription(activeModel.description || '');
+      setModelConcept(activeModel.concept || '');
     }
-  }, [selectedModelId, models]);
+  }, [selectedModelId, models.map(m => `${m.id}-${m.description}-${m.concept}-${m.profile}-${m.category}`).join('|')]);
 
   // 3. Status indicator for shared view
   const isReadOnly = !!sharedId && (!user || user.uid !== sharedId);
@@ -738,17 +765,24 @@ function App() {
           
           <div className="flex justify-end mb-8 items-center gap-4">
             {isReadOnly && (
-              <div className="flex items-center gap-2 bg-red-600/10 px-4 py-2 rounded-full border border-red-600/20">
-                <Eye size={14} className="text-red-600" />
-                <span className="text-[10px] text-red-500 font-mono uppercase tracking-widest font-bold">Vista de Solo Lectura {sharedId === user?.uid ? '(Tu Link)' : ''}</span>
+              <div className="flex items-center gap-2 bg-emerald-600/10 px-4 py-2 rounded-full border border-emerald-600/20">
+                <Eye size={14} className="text-emerald-500" />
+                <span className="text-[10px] text-emerald-400 font-mono uppercase tracking-widest font-bold">Monitor En Directo</span>
               </div>
             )}
             
-            {(sharedId) && models.length === 0 && (
-              <div className="flex items-center gap-2 bg-yellow-600/10 px-4 py-2 rounded-full border border-yellow-600/20">
-                <AlertCircle size={14} className="text-yellow-600" />
-                <span className="text-[10px] text-yellow-500 font-mono uppercase tracking-widest leading-none">
-                  {sharedId === user?.uid ? 'Sincronizando tus modelos...' : 'No se encontraron modelos para este link'}
+            {syncingCloud && (
+              <div className="flex items-center gap-2 bg-white/5 px-4 py-2 rounded-full border border-white/10">
+                <Loader2 size={14} className="animate-spin text-red-600" />
+                <span className="text-[10px] text-gray-400 font-mono uppercase tracking-widest leading-none">Actualizando Cloud...</span>
+              </div>
+            )}
+
+            {sharedId && !syncingCloud && models.length === 0 && (
+              <div className="flex items-center gap-2 bg-red-600/10 px-4 py-2 rounded-full border border-red-600/20">
+                <AlertCircle size={14} className="text-red-500" />
+                <span className="text-[10px] text-red-400 font-mono uppercase tracking-widest leading-none">
+                  {sharedId === user?.uid ? 'Sin modelos en la nube' : 'Enlace sin modelos configurados'}
                 </span>
               </div>
             )}
@@ -815,7 +849,7 @@ function App() {
               <div className="flex justify-between items-center">
                 <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">01. Modelo</label>
                 <div className="flex gap-4 items-center">
-                  {user && (
+                  {!isReadOnly && user && (
                     <button 
                       onClick={deleteModel}
                       className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
@@ -824,7 +858,7 @@ function App() {
                       Eliminar
                     </button>
                   )}
-                  {user && (
+                  {!isReadOnly && (user || !sharedId) && (
                     <button 
                       onClick={() => setIsAddingModel(!isAddingModel)}
                       className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
@@ -906,7 +940,7 @@ function App() {
             <div className="flex flex-col gap-4 md:col-span-2 lg:col-span-2">
               <div className="flex justify-between items-center">
                 <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">04. Perfil / Descripción</label>
-                {user && (
+                {user && !isReadOnly && (
                   <button 
                     onClick={saveModelDescription}
                     disabled={savingModel || !selectedModelId}
@@ -941,7 +975,7 @@ function App() {
                     rows={5}
                     className={`w-full bg-[#0a0a0a] border border-white/5 p-4 pr-16 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg placeholder:text-gray-700 ${isReadOnly ? 'cursor-default' : ''}`}
                   />
-                  {user && (
+                  {user && !isReadOnly && (
                     <button 
                       onClick={saveModelDescription}
                       disabled={savingModel}
