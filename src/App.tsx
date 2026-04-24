@@ -202,12 +202,14 @@ function App() {
     }
 
     setSyncingCloud(true);
-    console.log(`Setting up sync for: ${effectiveUserId} | Owner: ${isOwner}`);
+    console.log(`[Sync] Target UID: ${effectiveUserId} | IsOwner: ${isOwner}`);
     
     const path = 'models';
     const q = query(collection(db, path), where('userId', '==', String(effectiveUserId)));
     
     unsubscribe = onSnapshot(q, async (snapshot) => {
+      console.log(`[Sync] Snapshot received. Empty: ${snapshot.empty} | Size: ${snapshot.size}`);
+
       const firestoreModels = snapshot.docs.map(doc => {
         const data = doc.data();
         return {
@@ -216,11 +218,10 @@ function App() {
         } as ModelProfile;
       });
       
-      // MIGRACIÓN Y SEEDING
+      // MIGRACIÓN Y SEEDING (Solo para el dueño si la nube está vacía)
       if (snapshot.empty && !snapshot.metadata.fromCache && isOwner && user) {
-        console.log("No cloud data found. Attempting migration or seeding...");
+        console.log("[Sync] Cloud empty. Checking for migration...");
         
-        // 1. Try to get models from LocalStorage first (migration)
         const localData = localStorage.getItem('webcam_models');
         let modelsToSync: ModelProfile[] = [];
         
@@ -233,33 +234,32 @@ function App() {
                 id: m.id.toString(),
                 userId: user.uid
               }));
-              console.log("Migration: Found local models to push to cloud.");
+              console.log(`[Sync] Migrating ${modelsToSync.length} local models to Cloud.`);
             }
           } catch (e) {
-            console.error("Migration parse error:", e);
+            console.error("[Sync] Local data parse error:", e);
           }
         }
         
-        // 2. If no local data, use defaults
         if (modelsToSync.length === 0) {
-          console.log("Seeding with defaults.");
+          console.log("[Sync] No local data. Seeding defaults...");
           modelsToSync = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString(), userId: user.uid }));
         }
         
-        // 3. Batch write (or sequential setDoc)
         for (const m of modelsToSync) {
           try {
-            const docId = m.userId === user.uid ? m.id.toString() : `${user.uid}_${m.id}`;
+            const docId = m.id.toString().includes(user.uid) ? m.id.toString() : `${user.uid}_${m.id}`;
             await setDoc(doc(db, 'models', docId), {
               ...m,
               id: docId,
               userId: user.uid
             });
           } catch (se) {
-            console.error("Error writing model during sync:", se);
+            console.error("[Sync] Error writing model:", se);
           }
         }
-        return; // onSnapshot will trigger again after writes
+        // Don't setSyncingCloud(false) yet, wait for the next snapshot triggered by writes
+        return; 
       }
 
       const sortedModels = firestoreModels.sort((a, b) => {
@@ -268,10 +268,10 @@ function App() {
         return nameA.localeCompare(nameB, undefined, {numeric: true, sensitivity: 'base'});
       });
 
+      console.log(`[Sync] Setting ${sortedModels.length} models.`);
       setModels(sortedModels);
       setSyncingCloud(false);
       
-      // Auto-selection of first model if none valid
       if (sortedModels.length > 0) {
         setSelectedModelId(current => {
           const exists = sortedModels.some(m => m.id.toString() === current?.toString());
@@ -284,7 +284,7 @@ function App() {
         localStorage.setItem('webcam_models', JSON.stringify(sortedModels));
       }
     }, (error) => {
-      console.error("Critical Sync Error:", error);
+      console.error("[Sync] Error critical:", error);
       setSyncingCloud(false);
       if (isOwner) {
         handleFirestoreError(error, OperationType.LIST, path);
@@ -302,7 +302,6 @@ function App() {
     
     const activeModel = models.find(m => m.id.toString() === selectedModelId.toString());
     if (activeModel) {
-      // For shared monitors OR when switching models, we update the local state from the models array
       setProfile(activeModel.profile || '18 a 25');
       setSelectedCategory(activeModel.category || 'Natural');
       setModelDescription(activeModel.description || '');
@@ -312,6 +311,7 @@ function App() {
 
   // 3. Status indicator for shared view
   const isReadOnly = !!sharedId && (!user || user.uid !== sharedId);
+  const isLinkOwnerButLoggedOut = !!sharedId && !user;
 
   useEffect(() => {
     const lastSelectedId = localStorage.getItem('last_selected_model_id');
@@ -339,7 +339,13 @@ function App() {
       if (error.code === 'auth/popup-closed-by-user') {
         setGeneralError("La ventana de inicio de sesión se cerró antes de completar.");
       } else if (error.code === 'auth/unauthorized-domain') {
-        setGeneralError("Este dominio no está autorizado para el inicio de sesión. Por favor, contacta al administrador.");
+        setGeneralError(
+          "Error de Dominio: Este dominio no está autorizado en Firebase. \n\n" +
+          "Para solucionar esto:\n" +
+          "1. Ve a Firebase Console > Authentication > Settings.\n" +
+          "2. En 'Authorized domains', añade: '" + window.location.hostname + "'\n" +
+          "3. Recarga la página e intenta de nuevo."
+        );
       } else {
         setGeneralError("Error al iniciar sesión: " + error.message);
       }
@@ -765,9 +771,19 @@ function App() {
           
           <div className="flex justify-end mb-8 items-center gap-4">
             {isReadOnly && (
-              <div className="flex items-center gap-2 bg-emerald-600/10 px-4 py-2 rounded-full border border-emerald-600/20">
-                <Eye size={14} className="text-emerald-500" />
-                <span className="text-[10px] text-emerald-400 font-mono uppercase tracking-widest font-bold">Monitor En Directo</span>
+              <div className="flex flex-col items-end gap-2 text-right">
+                <div className="flex items-center gap-2 bg-emerald-600/10 px-4 py-2 rounded-full border border-emerald-600/20">
+                  <Eye size={14} className="text-emerald-500" />
+                  <span className="text-[10px] text-emerald-400 font-mono uppercase tracking-widest font-bold">Monitor En Directo</span>
+                </div>
+                {isLinkOwnerButLoggedOut && (
+                  <button 
+                    onClick={handleLogin}
+                    className="text-[9px] text-red-500 hover:underline uppercase font-mono tracking-tighter"
+                  >
+                    ¿Eres el dueño? Inicia sesión para editar
+                  </button>
+                )}
               </div>
             )}
             
@@ -938,15 +954,18 @@ function App() {
             </div>
 
             <div className="flex flex-col gap-4 md:col-span-2 lg:col-span-2">
-              <div className="flex justify-between items-center">
-                <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">04. Perfil / Descripción</label>
+              <div className="flex justify-between items-center bg-white/5 p-4 rounded-xl border border-white/5 mb-2">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">04. Perfil / Descripción</label>
+                  <p className="text-[10px] text-gray-500 font-sans uppercase tracking-tighter">Define la identidad de la modelo vinculada a este perfil</p>
+                </div>
                 {user && !isReadOnly && (
                   <button 
                     onClick={saveModelDescription}
                     disabled={savingModel || !selectedModelId}
-                    className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono flex items-center gap-2"
+                    className="bg-red-600 hover:bg-red-700 active:scale-95 text-white px-4 py-2 rounded-lg text-[10px] font-mono font-bold uppercase tracking-widest flex items-center gap-2 transition-all shadow-lg shadow-red-900/30"
                   >
-                    {savingModel ? <Loader2 size={10} className="animate-spin" /> : <Save size={10} />}
+                    {savingModel ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
                     Guardar Perfil
                   </button>
                 )}
@@ -957,7 +976,7 @@ function App() {
                   onChange={(e) => setModelDescription(e.target.value)}
                   readOnly={isReadOnly}
                   placeholder={isReadOnly ? "Descripción del perfil..." : "Rasgos, personalidad, fetiches específicos..."}
-                  rows={5}
+                  rows={4}
                   className={`w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg placeholder:text-gray-700 ${isReadOnly ? 'cursor-default' : ''}`}
                 />
               </div>
@@ -965,34 +984,72 @@ function App() {
 
             <div className="flex flex-col gap-4 md:col-span-2 lg:col-span-2">
               <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">05. Concepto / Enfoque del Día</label>
-              <div className="relative flex gap-2">
-                <div className="relative flex-1">
-                  <textarea 
-                    value={modelConcept}
-                    onChange={(e) => setModelConcept(e.target.value)}
-                    readOnly={isReadOnly}
-                    placeholder={isReadOnly ? "Concepto del día..." : "Ej: Spa de pies, sesión de ballet, dominación suave..."}
-                    rows={5}
-                    className={`w-full bg-[#0a0a0a] border border-white/5 p-4 pr-16 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg placeholder:text-gray-700 ${isReadOnly ? 'cursor-default' : ''}`}
-                  />
-                  {user && !isReadOnly && (
+              <div className="relative flex flex-col gap-4">
+                <div className="relative flex gap-2">
+                  <div className="relative flex-1">
+                    <textarea 
+                      value={modelConcept}
+                      onChange={(e) => setModelConcept(e.target.value)}
+                      readOnly={isReadOnly}
+                      placeholder={isReadOnly ? "Concepto del día..." : "Ej: Spa de pies, sesión de ballet, dominación suave..."}
+                      rows={4}
+                      className={`w-full bg-[#0a0a0a] border border-white/5 p-4 pr-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg placeholder:text-gray-700 ${isReadOnly ? 'cursor-default' : ''}`}
+                    />
+                  </div>
+                  <button 
+                    onClick={generateContent}
+                    disabled={loading}
+                    className="px-6 bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 transition-all flex items-center justify-center rounded-lg shadow-xl shadow-red-900/20 active:scale-95 group/btn"
+                  >
+                    {loading ? <Loader2 className="animate-spin" size={24} /> : <Sparkles className="group-hover/btn:rotate-12 transition-transform" size={24} />}
+                  </button>
+                </div>
+
+                {/* BOTÓN DE GUARDADO GIGANTE - Solo visible para el dueño identificado */}
+                {!isReadOnly && user && (
+                  <div className="flex flex-col items-center gap-4 py-8 border-t border-white/5 mt-6 bg-white/2 rounded-2xl">
+                    <div className="flex flex-col items-center gap-2 mb-2">
+                       <p className="text-[11px] text-gray-400 font-mono uppercase tracking-[0.2em] font-bold">¿Listo para sincronizar?</p>
+                       <p className="text-[9px] text-gray-600 font-sans uppercase">Los cambios se verán en tiempo real en el monitor compartido</p>
+                    </div>
                     <button 
                       onClick={saveModelDescription}
-                      disabled={savingModel}
-                      className="absolute right-4 top-4 p-2 text-gray-500 hover:text-red-600 transition-all"
-                      title="Guardar Perfil y Concepto"
+                      disabled={savingModel || !selectedModelId}
+                      className="w-full max-w-md bg-red-600 hover:bg-red-700 disabled:bg-gray-800 text-white py-6 rounded-2xl flex items-center justify-center gap-4 text-base font-mono font-black uppercase tracking-[0.4em] transition-all shadow-[0_0_60px_rgba(220,38,38,0.4)] active:scale-95 border-2 border-red-500/30 group"
                     >
-                      {savingModel ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
+                      {savingModel ? (
+                        <>
+                          <Loader2 size={28} className="animate-spin text-white" />
+                          <span>Sincronizando...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Save size={28} className="group-hover:scale-110 transition-transform" />
+                          <span>GUARDAR PERFIL</span>
+                        </>
+                      )}
                     </button>
-                  )}
-                </div>
-                <button 
-                  onClick={generateContent}
-                  disabled={loading}
-                  className="px-6 bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 transition-all flex items-center justify-center rounded-lg shadow-xl shadow-red-900/20 active:scale-95 group/btn"
-                >
-                  {loading ? <Loader2 className="animate-spin" size={24} /> : <Sparkles className="group-hover/btn:rotate-12 transition-transform" size={24} />}
-                </button>
+                    <p className="text-[10px] text-red-500/60 font-mono uppercase tracking-widest text-center mt-2 animate-pulse">
+                      • Sincronización en directo activa •
+                    </p>
+                  </div>
+                )}
+
+                {/* Aviso para el dueño si está en el link sin sesión */}
+                {isLinkOwnerButLoggedOut && (
+                  <div className="bg-yellow-600/10 border border-yellow-600/30 p-6 rounded-2xl flex flex-col items-center gap-4 text-center mt-4">
+                    <p className="text-sm text-yellow-500 font-sans">
+                      Estás viendo este perfil desde un enlace compartido. 
+                      Para realizar cambios, debes <strong>iniciar sesión</strong>.
+                    </p>
+                    <button 
+                      onClick={handleLogin}
+                      className="bg-yellow-600 hover:bg-yellow-700 text-black px-8 py-3 rounded-full text-xs font-mono font-bold uppercase"
+                    >
+                      Iniciar Sesión para Editar
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>
