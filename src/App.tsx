@@ -173,6 +173,10 @@ function App() {
   });
   const [linkCopied, setLinkCopied] = useState(false);
 
+  // Derived indicators
+  const isReadOnly = !!sharedId && (!user || user.uid !== sharedId);
+  const isLinkOwnerButLoggedOut = !!sharedId && !user;
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
@@ -296,9 +300,25 @@ function App() {
     };
   }, [user, isAuthReady, sharedId]);
 
-  // Unified Real-time field sync: Fields follow the models state
+  // Sync logic for fields
   useEffect(() => {
     if (!selectedModelId || models.length === 0) return;
+    
+    const activeModel = models.find(m => m.id.toString() === selectedModelId.toString());
+    if (!activeModel) return;
+
+    // Visitors sync in real-time
+    if (isReadOnly) {
+      setProfile(activeModel.profile || '18 a 25');
+      setSelectedCategory(activeModel.category || 'Natural');
+      setModelDescription(activeModel.description || '');
+      setModelConcept(activeModel.concept || '');
+    }
+  }, [selectedModelId, models, isReadOnly]);
+
+  // Initial load or model switch for Master
+  useEffect(() => {
+    if (!selectedModelId || models.length === 0 || isReadOnly) return;
     
     const activeModel = models.find(m => m.id.toString() === selectedModelId.toString());
     if (activeModel) {
@@ -307,11 +327,7 @@ function App() {
       setModelDescription(activeModel.description || '');
       setModelConcept(activeModel.concept || '');
     }
-  }, [selectedModelId, models.map(m => `${m.id}-${m.description}-${m.concept}-${m.profile}-${m.category}`).join('|')]);
-
-  // 3. Status indicator for shared view
-  const isReadOnly = !!sharedId && (!user || user.uid !== sharedId);
-  const isLinkOwnerButLoggedOut = !!sharedId && !user;
+  }, [selectedModelId]);
 
   useEffect(() => {
     const lastSelectedId = localStorage.getItem('last_selected_model_id');
@@ -330,7 +346,7 @@ function App() {
     });
   };
 
-  const login = async () => {
+  const handleLogin = async () => {
     try {
       setGeneralError(null);
       await signInWithPopup(auth, googleProvider);
@@ -402,24 +418,30 @@ function App() {
     }
   };
 
+  const [showSaveSuccess, setShowSaveSuccess] = useState(false);
+  
   const handleModelChange = (id: string | number) => {
+    console.log("[Selection] Switching to:", id);
     setSelectedModelId(id);
     localStorage.setItem('last_selected_model_id', id.toString());
   };
 
   const saveModelDescription = async () => {
-    if (!selectedModelId) return;
+    if (!selectedModelId) {
+      console.warn("[Save] No model selected");
+      return;
+    }
     
     setSavingModel(true);
     const path = `models/${selectedModelId}`;
     try {
       if (user) {
-        const modelRef = doc(db, 'models', selectedModelId.toString());
-        const currentModel = models.find(m => m.id.toString() === selectedModelId.toString());
+        const modelIdStr = selectedModelId.toString();
+        const modelRef = doc(db, 'models', modelIdStr);
+        const currentModel = models.find(m => m.id.toString() === modelIdStr);
         
-        // Final safety check to ensure we have valid data before writing
         const modelData = {
-          id: selectedModelId.toString(),
+          id: modelIdStr,
           name: currentModel?.name || 'Modelo',
           description: modelDescription,
           concept: modelConcept,
@@ -428,8 +450,10 @@ function App() {
           userId: user.uid
         };
 
+        console.log("[Save] Writing to Firestore:", path, modelData);
         await setDoc(modelRef, modelData, { merge: true });
       } else {
+        console.log("[Save] Updating LocalStorage");
         const updatedModels = models.map(m => 
           m.id.toString() === selectedModelId.toString() 
             ? { ...m, description: modelDescription, concept: modelConcept, profile: profile, category: selectedCategory } 
@@ -439,12 +463,13 @@ function App() {
         localStorage.setItem('webcam_models', JSON.stringify(updatedModels));
       }
       
-      setTimeout(() => setSavingModel(false), 500);
+      setShowSaveSuccess(true);
+      setTimeout(() => setShowSaveSuccess(false), 2000);
+      setSavingModel(false);
     } catch (error) {
+      console.error("[Save] Error:", error);
       if (user) {
         handleFirestoreError(error, OperationType.WRITE, path);
-      } else {
-        console.error("Error saving model:", error);
       }
       setSavingModel(false);
     }
@@ -829,7 +854,7 @@ function App() {
               </div>
             ) : (
               <button 
-                onClick={login}
+                onClick={handleLogin}
                 className="flex items-center gap-3 px-6 py-3 bg-white text-black rounded-full font-mono text-xs font-bold uppercase tracking-widest hover:bg-red-600 hover:text-white transition-all shadow-[0_0_30px_rgba(255,255,255,0.1)]"
               >
                 <LogIn size={16} />
@@ -963,9 +988,9 @@ function App() {
                   <button 
                     onClick={saveModelDescription}
                     disabled={savingModel || !selectedModelId}
-                    className="bg-red-600 hover:bg-red-700 active:scale-95 text-white px-4 py-2 rounded-lg text-[10px] font-mono font-bold uppercase tracking-widest flex items-center gap-2 transition-all shadow-lg shadow-red-900/30"
+                    className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono flex items-center gap-2"
                   >
-                    {savingModel ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                    {savingModel ? <Loader2 size={10} className="animate-spin" /> : <Save size={10} />}
                     Guardar Perfil
                   </button>
                 )}
@@ -1005,33 +1030,37 @@ function App() {
                   </button>
                 </div>
 
-                {/* BOTÓN DE GUARDADO GIGANTE - Solo visible para el dueño identificado */}
+                {/* BOTÓN DE GUARDADO - Simplificado */}
                 {!isReadOnly && user && (
-                  <div className="flex flex-col items-center gap-4 py-8 border-t border-white/5 mt-6 bg-white/2 rounded-2xl">
-                    <div className="flex flex-col items-center gap-2 mb-2">
-                       <p className="text-[11px] text-gray-400 font-mono uppercase tracking-[0.2em] font-bold">¿Listo para sincronizar?</p>
-                       <p className="text-[9px] text-gray-600 font-sans uppercase">Los cambios se verán en tiempo real en el monitor compartido</p>
-                    </div>
+                  <div className="flex flex-col items-center gap-4 py-6 border-t border-white/5 mt-4">
                     <button 
                       onClick={saveModelDescription}
                       disabled={savingModel || !selectedModelId}
-                      className="w-full max-w-md bg-red-600 hover:bg-red-700 disabled:bg-gray-800 text-white py-6 rounded-2xl flex items-center justify-center gap-4 text-base font-mono font-black uppercase tracking-[0.4em] transition-all shadow-[0_0_60px_rgba(220,38,38,0.4)] active:scale-95 border-2 border-red-500/30 group"
+                      className={`w-full max-w-sm py-3 rounded-lg flex items-center justify-center gap-3 text-xs font-mono font-bold uppercase tracking-widest transition-all shadow-lg active:scale-95 ${
+                        showSaveSuccess ? 'bg-emerald-600 text-white' : 'bg-red-600 hover:bg-red-700 text-white disabled:bg-gray-800'
+                      }`}
                     >
                       {savingModel ? (
                         <>
-                          <Loader2 size={28} className="animate-spin text-white" />
-                          <span>Sincronizando...</span>
+                          <Loader2 size={16} className="animate-spin" />
+                          <span>Guardando...</span>
+                        </>
+                      ) : showSaveSuccess ? (
+                        <>
+                          <Check size={16} />
                         </>
                       ) : (
                         <>
-                          <Save size={28} className="group-hover:scale-110 transition-transform" />
-                          <span>GUARDAR PERFIL</span>
+                          <Save size={16} />
+                          <span>Guardar Perfil</span>
                         </>
                       )}
                     </button>
-                    <p className="text-[10px] text-red-500/60 font-mono uppercase tracking-widest text-center mt-2 animate-pulse">
-                      • Sincronización en directo activa •
-                    </p>
+                    {showSaveSuccess && (
+                      <span className="text-[9px] text-emerald-500 font-mono uppercase tracking-widest animate-in fade-in duration-300">
+                        Sincronización completa
+                      </span>
+                    )}
                   </div>
                 )}
 
