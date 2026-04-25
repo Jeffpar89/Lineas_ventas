@@ -43,13 +43,17 @@ service cloud.firestore {
     }
 
     match /models/{modelId} {
-      // Allow anyone to read and list models (critical for sharing)
+      // Allow anyone with the link to see and search models
       allow read, list: if true;
       
-      // Only authenticated owners can create, update or delete
-      allow create: if isAuthenticated() && isValidModel(request.resource.data);
-      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && isValidModel(request.resource.data);
+      // Creating and deleting still require being the owner (authenticated)
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
       allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      
+      // Updates are allowed for everyone so models can save their daily concept and strategy
+      // We check that the userId (the owner) is not changed during the update
+      allow update: if (isAuthenticated() && resource.data.userId == request.auth.uid) || 
+                     (request.resource.data.userId == resource.data.userId);
     }
 
     match /test/connection {

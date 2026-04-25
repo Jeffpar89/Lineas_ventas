@@ -166,17 +166,14 @@ function App() {
   const [sharedId, setSharedId] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
       const urlParams = new URLSearchParams(window.location.search);
-      const guestId = urlParams.get('v');
-      if (guestId) console.log("[SharedMode] Initialized with ID:", guestId);
-      return guestId;
+      return urlParams.get('v');
     }
     return null;
   });
   const [linkCopied, setLinkCopied] = useState(false);
 
-  // Derived indicators
+  // Indica si estamos viendo el enlace de Jeff pero no somos Jeff (o no estamos logueados)
   const isReadOnly = !!sharedId && (!user || user.uid !== sharedId);
-  const isLinkOwnerButLoggedOut = !!sharedId && !user;
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -195,29 +192,22 @@ function App() {
 
     let unsubscribe: () => void;
     
-    // Determining which data to fetch:
-    // 1. If we have a 'v' in URL, it's a shared view - show that user's data.
-    // 2. Otherwise, if logged in, show current user's data.
+    // Conectamos con el perfil compartido o el propio
     const effectiveUserId = sharedId || (user ? user.uid : null);
-    const isOwner = !!user && (!sharedId || user.uid === sharedId);
 
     if (!effectiveUserId) {
-      console.log("[Sync] No user ID target. Loading local defaults.");
-      if (isAuthReady) {
-        fetchModels(); 
-        setSyncingCloud(false);
-      }
+      console.log("[Sync] Esperando usuario o enlace compartido...");
+      setModels([]); 
+      setSyncingCloud(false);
       return;
     }
 
     setSyncingCloud(true);
-    console.log(`[Sync] Initializing Firestore Sync | Target: ${effectiveUserId} | Role: ${isOwner ? 'Owner' : 'Viewer'}`);
+    console.log(`[Sync] Conectando con Firestore | Perfil: ${effectiveUserId} | Modo: ${isReadOnly ? 'Solo Lectura' : 'Editor'}`);
     
     const q = query(collection(db, 'models'), where('userId', '==', String(effectiveUserId)));
     
     unsubscribe = onSnapshot(q, (snapshot) => {
-      console.log(`[Sync] Snapshot update | Docs: ${snapshot.size}`);
-
       const firestoreModels = snapshot.docs.map(doc => {
         const data = doc.data();
         return {
@@ -235,7 +225,7 @@ function App() {
       setModels(sortedModels);
       setSyncingCloud(false);
       
-      // Auto-selection logic
+      // Selection logic
       if (sortedModels.length > 0) {
         setSelectedModelId(current => {
           if (!current) return sortedModels[0].id;
@@ -245,14 +235,10 @@ function App() {
       } else {
         setSelectedModelId(null);
       }
-
-      if (isOwner) {
-        localStorage.setItem('webcam_models', JSON.stringify(sortedModels));
-      }
     }, (error) => {
       console.error("[Sync] Firestore listener error:", error);
       setSyncingCloud(false);
-      if (isOwner) {
+      if (!isReadOnly) {
         handleFirestoreError(error, OperationType.LIST, 'models');
       }
     });
@@ -260,111 +246,47 @@ function App() {
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, [user, isAuthReady, sharedId]);
+  }, [user, isAuthReady, sharedId, isReadOnly]);
 
-  // 2.1 Dedicated Migration Trigger (Only for Owners)
-  useEffect(() => {
-    const runMigration = async () => {
-      if (!isAuthReady || !user || syncingCloud || sharedId) return;
-      if (models.length > 0) return; // Already have data in cloud
+  const lastModelIdRef = React.useRef<string | number | null>(null);
 
-      console.log("[Migration] Cloud is empty for this owner. Checking local storage...");
-      const localData = localStorage.getItem('webcam_models');
-      let modelsToSync: ModelProfile[] = [];
-      
-      if (localData) {
-        try {
-          const parsed = JSON.parse(localData);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            modelsToSync = parsed.map((m: any) => ({
-              ...m,
-              id: m.id.toString(),
-              userId: user.uid
-            }));
-          }
-        } catch (e) {
-          console.error("[Migration] Error parsing local data:", e);
-        }
-      }
-      
-      if (modelsToSync.length === 0) {
-        console.log("[Migration] No local data found. Seeding default models...");
-        modelsToSync = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString(), userId: user.uid }));
-      }
-
-      console.log(`[Migration] pushing ${modelsToSync.length} models to Cloud...`);
-      for (const m of modelsToSync) {
-        try {
-          const docId = m.id.toString().includes(user.uid) ? m.id.toString() : `${user.uid}_${m.id}`;
-          await setDoc(doc(db, 'models', docId), {
-            ...m,
-            id: docId,
-            userId: user.uid
-          });
-        } catch (e) {
-          console.error("[Migration] Write error:", e);
-        }
-      }
-    };
-
-    runMigration();
-  }, [user, isAuthReady, syncingCloud, models.length]);
-
-  // Sync logic for fields
+  // Sync logic for fields: ONLY when switching models to avoid overwriting current edits
   useEffect(() => {
     if (!selectedModelId || models.length === 0) return;
     
-    const activeModel = models.find(m => m.id.toString() === selectedModelId.toString());
-    if (!activeModel) return;
-
-    // Visitors sync in real-time
-    if (isReadOnly) {
-      setProfile(activeModel.profile || '18 a 25');
-      setSelectedCategory(activeModel.category || 'Natural');
-      setModelDescription(activeModel.description || '');
-      setModelConcept(activeModel.concept || '');
+    if (lastModelIdRef.current !== selectedModelId) {
+      const activeModel = models.find(m => m.id.toString() === selectedModelId.toString());
+      if (activeModel) {
+        setProfile(activeModel.profile || '18 a 25');
+        setSelectedCategory(activeModel.category || 'Natural');
+        setModelDescription(activeModel.description || '');
+        setModelConcept(activeModel.concept || '');
+      }
+      lastModelIdRef.current = selectedModelId;
     }
-  }, [selectedModelId, models, isReadOnly]);
-
-  // Initial load or model switch for Master
-  useEffect(() => {
-    if (!selectedModelId || models.length === 0 || isReadOnly) return;
-    
-    const activeModel = models.find(m => m.id.toString() === selectedModelId.toString());
-    if (activeModel) {
-      setProfile(activeModel.profile || '18 a 25');
-      setSelectedCategory(activeModel.category || 'Natural');
-      setModelDescription(activeModel.description || '');
-      setModelConcept(activeModel.concept || '');
-    }
-  }, [selectedModelId]);
+  }, [selectedModelId, models]);
 
   useEffect(() => {
     const lastSelectedId = localStorage.getItem('last_selected_model_id');
-    if (lastSelectedId && !sharedId) {
+    if (lastSelectedId) {
       setSelectedModelId(lastSelectedId);
     }
-  }, [sharedId]);
+  }, []);
 
   const copyShareLink = () => {
     if (!user) return;
     const baseUrl = window.location.origin + window.location.pathname;
-    // Usamos el UID directamente pero con un sufijo de seguridad simple
     const shareUrl = `${baseUrl}?v=${user.uid}`;
-    
-    // Mostramos log para depuración
-    console.log("[Share] Generated Link:", shareUrl);
     
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(shareUrl).then(() => {
         setLinkCopied(true);
         setTimeout(() => setLinkCopied(false), 2000);
-      }).catch(err => {
-        console.error("[Share] Clipboard error:", err);
-        alert("Enlace: " + shareUrl);
+      }).catch(() => {
+        alert("Enlace para modelos: " + shareUrl);
       });
     } else {
-      alert("Enlace Maestro: " + shareUrl);
+      alert("Enlace para modelos: " + shareUrl);
     }
   };
 
@@ -393,50 +315,8 @@ function App() {
   const logout = async () => {
     try {
       await signOut(auth);
-      // No need to clear state manually, the useEffect will call fetchModels()
     } catch (error) {
       console.error("Logout error:", error);
-    }
-  };
-
-  const fetchModels = () => {
-    try {
-      const savedModels = localStorage.getItem('webcam_models');
-      let modelsData: ModelProfile[] = [];
-      
-      if (savedModels) {
-        try {
-          const parsed = JSON.parse(savedModels);
-          if (Array.isArray(parsed)) {
-            modelsData = parsed.map((m: any) => ({
-              ...m,
-              id: m.id.toString()
-            }));
-          }
-        } catch (e) {
-          console.error("Error parsing saved models", e);
-        }
-      }
-      
-      if (modelsData.length === 0) {
-        modelsData = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString() }));
-        localStorage.setItem('webcam_models', JSON.stringify(modelsData));
-      }
-      
-      setModels(modelsData);
-      
-      const lastSelectedId = localStorage.getItem('last_selected_model_id');
-      const initialId = lastSelectedId || (modelsData.length > 0 ? modelsData[0].id.toString() : null);
-      
-      if (initialId) {
-        const model = modelsData.find(m => m.id.toString() === initialId.toString()) || modelsData[0];
-        setSelectedModelId(model.id);
-      }
-    } catch (error) {
-      console.error("Error fetching models:", error);
-      const initial = DEFAULT_MODELS.map(m => ({ ...m, id: m.id.toString() }));
-      setModels(initial);
-      if (initial.length > 0) setSelectedModelId(initial[0].id);
     }
   };
 
@@ -457,42 +337,37 @@ function App() {
     setSavingModel(true);
     const path = `models/${selectedModelId}`;
     try {
-      if (user) {
-        const modelIdStr = selectedModelId.toString();
-        const modelRef = doc(db, 'models', modelIdStr);
-        const currentModel = models.find(m => m.id.toString() === modelIdStr);
-        
-        const modelData = {
-          id: modelIdStr,
-          name: currentModel?.name || 'Modelo',
-          description: modelDescription,
-          concept: modelConcept,
-          profile: profile,
-          category: selectedCategory,
-          userId: user.uid
-        };
-
-        console.log("[Save] Writing to Firestore:", path, modelData);
-        await setDoc(modelRef, modelData, { merge: true });
-      } else {
-        console.log("[Save] Updating LocalStorage");
-        const updatedModels = models.map(m => 
-          m.id.toString() === selectedModelId.toString() 
-            ? { ...m, description: modelDescription, concept: modelConcept, profile: profile, category: selectedCategory } 
-            : m
-        );
-        setModels(updatedModels);
-        localStorage.setItem('webcam_models', JSON.stringify(updatedModels));
+      const effectiveUserId = sharedId || (user ? user.uid : null);
+      
+      if (!effectiveUserId) {
+        setGeneralError("No se pudo identificar el propietario del perfil.");
+        setSavingModel(false);
+        return;
       }
+
+      const modelIdStr = selectedModelId.toString();
+      const modelRef = doc(db, 'models', modelIdStr);
+      const currentModel = models.find(m => m.id.toString() === modelIdStr);
+      
+      const modelData = {
+        id: modelIdStr,
+        name: currentModel?.name || 'Modelo',
+        description: modelDescription,
+        concept: modelConcept,
+        profile: profile,
+        category: selectedCategory,
+        userId: effectiveUserId
+      };
+
+      console.log("[Save] Writing to Firestore:", path, modelData);
+      await setDoc(modelRef, modelData, { merge: true });
       
       setShowSaveSuccess(true);
       setTimeout(() => setShowSaveSuccess(false), 2000);
       setSavingModel(false);
     } catch (error) {
       console.error("[Save] Error:", error);
-      if (user) {
-        handleFirestoreError(error, OperationType.WRITE, path);
-      }
+      setGeneralError("Error al guardar cambios. Verifica el enlace o login.");
       setSavingModel(false);
     }
   };
@@ -514,13 +389,13 @@ function App() {
         userId: user?.uid
       };
       
-      if (user) {
-        await setDoc(doc(db, 'models', newId), newModel);
-      } else {
-        const updatedModels = [...models, newModel];
-        setModels(updatedModels);
-        localStorage.setItem('webcam_models', JSON.stringify(updatedModels));
+      if (!user) {
+        setGeneralError("Debes iniciar sesión para añadir modelos.");
+        setSavingModel(false);
+        return;
       }
+
+      await setDoc(doc(db, 'models', newId), newModel);
       
       setSelectedModelId(newId);
       setModelDescription('');
@@ -528,11 +403,7 @@ function App() {
       setIsAddingModel(false);
       setNewModelName('');
     } catch (error) {
-      if (user) {
-        handleFirestoreError(error, OperationType.CREATE, path);
-      } else {
-        console.error("Error adding new model:", error);
-      }
+      handleFirestoreError(error, OperationType.CREATE, path);
     } finally {
       setSavingModel(false);
     }
@@ -546,23 +417,18 @@ function App() {
     const path = `models/${selectedModelId}`;
     if (window.confirm(`¿Estás seguro de que quieres eliminar a la modelo "${modelToDelete.name}"?`)) {
       try {
-        if (user) {
-          await deleteDoc(doc(db, 'models', selectedModelId.toString()));
-        } else {
-          const updatedModels = models.filter(m => m.id !== selectedModelId && m.id !== selectedModelId.toString());
-          setModels(updatedModels);
-          localStorage.setItem('webcam_models', JSON.stringify(updatedModels));
+        if (!user) {
+          setGeneralError("Debes iniciar sesión para eliminar modelos.");
+          return;
         }
+
+        await deleteDoc(doc(db, 'models', selectedModelId.toString()));
         
         setSelectedModelId(null);
         setModelDescription('');
         setModelConcept('');
       } catch (error) {
-        if (user) {
-          handleFirestoreError(error, OperationType.DELETE, path);
-        } else {
-          console.error("Error deleting model:", error);
-        }
+        handleFirestoreError(error, OperationType.DELETE, path);
       }
     }
   };
@@ -818,45 +684,26 @@ function App() {
           
           <div className="flex justify-end mb-8 items-center gap-4">
             {isReadOnly && (
-              <div className="flex flex-col items-end gap-2 text-right">
-                <div className="flex items-center gap-2 bg-emerald-600/10 px-4 py-2 rounded-full border border-emerald-600/20">
-                  <Eye size={14} className="text-emerald-500" />
-                  <span className="text-[10px] text-emerald-400 font-mono uppercase tracking-widest font-bold">Monitor En Directo</span>
-                </div>
-                {isLinkOwnerButLoggedOut && (
-                  <button 
-                    onClick={handleLogin}
-                    className="text-[9px] text-red-500 hover:underline uppercase font-mono tracking-tighter"
-                  >
-                    ¿Eres el dueño? Inicia sesión para editar
-                  </button>
-                )}
+              <div className="flex items-center gap-2 bg-emerald-600/10 px-4 py-2 rounded-full border border-emerald-600/20">
+                <Eye size={14} className="text-emerald-500" />
+                <span className="text-[10px] text-emerald-400 font-mono uppercase tracking-widest font-bold">Vista de Modelo</span>
               </div>
             )}
-            
+
             {syncingCloud && (
               <div className="flex items-center gap-2 bg-white/5 px-4 py-2 rounded-full border border-white/10">
                 <Loader2 size={14} className="animate-spin text-red-600" />
-                <span className="text-[10px] text-gray-400 font-mono uppercase tracking-widest leading-none">Actualizando Cloud...</span>
+                <span className="text-[10px] text-gray-400 font-mono uppercase tracking-widest leading-none">Guardando cambios...</span>
               </div>
             )}
 
-            {sharedId && !syncingCloud && models.length === 0 && (
-              <div className="flex items-center gap-2 bg-red-600/10 px-4 py-2 rounded-full border border-red-600/20">
-                <AlertCircle size={14} className="text-red-500" />
-                <span className="text-[10px] text-red-400 font-mono uppercase tracking-widest leading-none">
-                  {sharedId === user?.uid ? 'Sin modelos en la nube' : 'Enlace sin modelos configurados'}
-                </span>
-              </div>
-            )}
-
-            {user && (
+            {user && !isReadOnly && (
               <button 
                 onClick={copyShareLink}
-                className="flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/10 text-gray-400 rounded-full font-mono text-[10px] uppercase tracking-widest hover:bg-white/10 hover:text-white transition-all shadow-sm"
+                className="flex items-center gap-2 px-4 py-2 bg-red-600/10 border border-red-600/20 text-red-500 rounded-full font-mono text-[10px] uppercase tracking-widest hover:bg-red-600/20 transition-all"
               >
                 {linkCopied ? <Check size={12} className="text-emerald-500" /> : <Share2 size={12} />}
-                {linkCopied ? 'Enlace Copiado' : 'Copiar Enlace Maestro'}
+                {linkCopied ? 'Enlace Copiado' : 'Compartir con Modelos'}
               </button>
             )}
 
@@ -912,7 +759,7 @@ function App() {
               <div className="flex justify-between items-center">
                 <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">01. Modelo</label>
                 <div className="flex gap-4 items-center">
-                  {!isReadOnly && user && (
+                  {user && !isReadOnly && (
                     <button 
                       onClick={deleteModel}
                       className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
@@ -921,7 +768,7 @@ function App() {
                       Eliminar
                     </button>
                   )}
-                  {!isReadOnly && (user || !sharedId) && (
+                  {!isReadOnly && (
                     <button 
                       onClick={() => setIsAddingModel(!isAddingModel)}
                       className="text-[10px] text-gray-500 hover:text-red-600 transition-colors uppercase font-mono"
@@ -972,8 +819,7 @@ function App() {
                 <select 
                   value={profile}
                   onChange={(e) => setProfile(e.target.value)}
-                  disabled={isReadOnly}
-                  className={`w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg appearance-none ${isReadOnly ? 'cursor-default' : 'cursor-pointer hover:bg-black'}`}
+                  className="w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg appearance-none cursor-pointer hover:bg-black"
                 >
                   {PROFILES.map(p => <option key={p} value={p}>{p}</option>)}
                 </select>
@@ -989,8 +835,7 @@ function App() {
                 <select 
                   value={selectedCategory}
                   onChange={(e) => setSelectedCategory(e.target.value)}
-                  disabled={isReadOnly}
-                  className={`w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg appearance-none ${isReadOnly ? 'cursor-default' : 'cursor-pointer hover:bg-black'}`}
+                  className="w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg appearance-none cursor-pointer hover:bg-black"
                 >
                   {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
@@ -1006,7 +851,6 @@ function App() {
                   <label className="text-[10px] uppercase font-mono tracking-[0.3em] text-red-600 font-bold">04. Perfil / Descripción</label>
                   <p className="text-[10px] text-gray-500 font-sans uppercase tracking-tighter">Define la identidad de la modelo vinculada a este perfil</p>
                 </div>
-                {user && !isReadOnly && (
                   <button 
                     onClick={saveModelDescription}
                     disabled={savingModel || !selectedModelId}
@@ -1015,18 +859,16 @@ function App() {
                     {savingModel ? <Loader2 size={10} className="animate-spin" /> : <Save size={10} />}
                     Guardar Perfil
                   </button>
-                )}
               </div>
-              <div className="relative">
-                <textarea 
-                  value={modelDescription}
-                  onChange={(e) => setModelDescription(e.target.value)}
-                  readOnly={isReadOnly}
-                  placeholder={isReadOnly ? "Descripción del perfil..." : "Rasgos, personalidad, fetiches específicos..."}
-                  rows={4}
-                  className={`w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg placeholder:text-gray-700 ${isReadOnly ? 'cursor-default' : ''}`}
-                />
-              </div>
+                <div className="relative">
+                  <textarea 
+                    value={modelDescription}
+                    onChange={(e) => setModelDescription(e.target.value)}
+                    placeholder="Rasgos, personalidad, fetiches específicos..."
+                    rows={4}
+                    className="w-full bg-[#0a0a0a] border border-white/5 p-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg placeholder:text-gray-700"
+                  />
+                </div>
             </div>
 
             <div className="flex flex-col gap-4 md:col-span-2 lg:col-span-2">
@@ -1037,10 +879,9 @@ function App() {
                     <textarea 
                       value={modelConcept}
                       onChange={(e) => setModelConcept(e.target.value)}
-                      readOnly={isReadOnly}
-                      placeholder={isReadOnly ? "Concepto del día..." : "Ej: Spa de pies, sesión de ballet, dominación suave..."}
+                      placeholder="Ej: Spa de pies, sesión de ballet, dominación suave..."
                       rows={4}
-                      className={`w-full bg-[#0a0a0a] border border-white/5 p-4 pr-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg placeholder:text-gray-700 ${isReadOnly ? 'cursor-default' : ''}`}
+                      className="w-full bg-[#0a0a0a] border border-white/5 p-4 pr-4 font-sans text-base font-light focus:outline-none focus:border-red-600 text-white transition-all rounded-lg placeholder:text-gray-700"
                     />
                   </div>
                   <button 
@@ -1052,55 +893,36 @@ function App() {
                   </button>
                 </div>
 
-                {/* BOTÓN DE GUARDADO - Simplificado */}
-                {!isReadOnly && user && (
-                  <div className="flex flex-col items-center gap-4 py-6 border-t border-white/5 mt-4">
-                    <button 
-                      onClick={saveModelDescription}
-                      disabled={savingModel || !selectedModelId}
-                      className={`w-full max-w-sm py-3 rounded-lg flex items-center justify-center gap-3 text-xs font-mono font-bold uppercase tracking-widest transition-all shadow-lg active:scale-95 ${
-                        showSaveSuccess ? 'bg-emerald-600 text-white' : 'bg-red-600 hover:bg-red-700 text-white disabled:bg-gray-800'
-                      }`}
-                    >
-                      {savingModel ? (
-                        <>
-                          <Loader2 size={16} className="animate-spin" />
-                          <span>Guardando...</span>
-                        </>
-                      ) : showSaveSuccess ? (
-                        <>
-                          <Check size={16} />
-                        </>
-                      ) : (
-                        <>
-                          <Save size={16} />
-                          <span>Guardar Perfil</span>
-                        </>
-                      )}
-                    </button>
-                    {showSaveSuccess && (
-                      <span className="text-[9px] text-emerald-500 font-mono uppercase tracking-widest animate-in fade-in duration-300">
-                        Sincronización completa
-                      </span>
+                <div className="flex flex-col items-center gap-4 py-6 border-t border-white/5 mt-4">
+                  <button 
+                    onClick={saveModelDescription}
+                    disabled={savingModel || !selectedModelId}
+                    className={`w-full max-w-sm py-3 rounded-lg flex items-center justify-center gap-3 text-xs font-mono font-bold uppercase tracking-widest transition-all shadow-lg active:scale-95 ${
+                      showSaveSuccess ? 'bg-emerald-600 text-white' : 'bg-red-600 hover:bg-red-700 text-white disabled:bg-gray-800'
+                    }`}
+                  >
+                    {savingModel ? (
+                      <>
+                        <Loader2 size={16} className="animate-spin" />
+                        <span>Guardando...</span>
+                      </>
+                    ) : showSaveSuccess ? (
+                      <>
+                        <Check size={16} />
+                      </>
+                    ) : (
+                      <>
+                        <Save size={16} />
+                        <span>Guardar Perfil</span>
+                      </>
                     )}
-                  </div>
-                )}
-
-                {/* Aviso para el dueño si está en el link sin sesión */}
-                {isLinkOwnerButLoggedOut && (
-                  <div className="bg-yellow-600/10 border border-yellow-600/30 p-6 rounded-2xl flex flex-col items-center gap-4 text-center mt-4">
-                    <p className="text-sm text-yellow-500 font-sans">
-                      Estás viendo este perfil desde un enlace compartido. 
-                      Para realizar cambios, debes <strong>iniciar sesión</strong>.
-                    </p>
-                    <button 
-                      onClick={handleLogin}
-                      className="bg-yellow-600 hover:bg-yellow-700 text-black px-8 py-3 rounded-full text-xs font-mono font-bold uppercase"
-                    >
-                      Iniciar Sesión para Editar
-                    </button>
-                  </div>
-                )}
+                  </button>
+                  {showSaveSuccess && (
+                    <span className="text-[9px] text-emerald-500 font-mono uppercase tracking-widest animate-in fade-in duration-300">
+                      Sincronización completa
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           </div>
