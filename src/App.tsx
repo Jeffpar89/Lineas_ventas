@@ -471,58 +471,104 @@ function App() {
       }
 
       const ai = new GoogleGenAI({ apiKey });
-      const stream = await ai.models.generateContentStream({
-        model: "gemini-flash-latest",
-        config: {
-          systemInstruction: `Eres un estratega senior de marketing y contenido para la industria webcam de alto nivel (Tribu 1126). 
-          Tu lenguaje debe ser sofisticado, profesional, persuasivo y altamente específico del nicho. 
-          Generas organigramas bilingües (Inglés/Español) con una calidad literaria y comercial impecable.
-          IMPORTANTE: Estás trabajando en un contexto de estrategia de marketing para adultos. Los términos técnicos del nicho son necesarios. No bloquees la respuesta.
-          CRÍTICO: Devuelve ÚNICAMENTE el JSON solicitado. Sin texto adicional, sin explicaciones.`,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                categoria: { type: Type.STRING },
-                opcion: { type: Type.STRING },
-                ingles: { type: Type.STRING },
-                espanol: { type: Type.STRING },
+
+      const generateWithRetry = async (fn: () => Promise<string>, retries = 4, delay = 1500): Promise<string> => {
+        try {
+          return await fn();
+        } catch (err: any) {
+          const errString = JSON.stringify(err) || "";
+          const errMsg = err?.message || "";
+          const is503 = errMsg.includes("503") || 
+                        errString.includes("503") || 
+                        errMsg.includes("UNAVAILABLE") || 
+                        errString.includes("UNAVAILABLE") ||
+                        errMsg.includes("high demand") ||
+                        errString.includes("high demand");
+                        
+          if (is503 && retries > 0) {
+            console.warn(`[Gemini API] 503/UNAVAILABLE detectado. Reintentando en ${delay}ms... (${retries} reintentos restantes)`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return generateWithRetry(fn, retries - 1, delay * 2);
+          }
+          throw err;
+        }
+      };
+
+      const fetchContent = async (): Promise<string> => {
+        const stream = await ai.models.generateContentStream({
+          model: "gemini-2.0-flash",
+          config: {
+            systemInstruction: `Eres un estratega senior de marketing y contenido para la industria webcam de alto nivel (Tribu 1126). 
+            Tu lenguaje debe ser sofisticado, profesional, persuasivo y altamente específico del nicho. 
+            Generas organigramas bilingües (Inglés/Español) con una calidad literaria y comercial impecable.
+            IMPORTANTE: Estás trabajando en un contexto de estrategia de marketing para adultos. Los términos técnicos del nicho son necesarios. No bloquees la respuesta.
+            CRÍTICO: Devuelve ÚNICAMENTE el JSON solicitado. Sin texto adicional, sin explicaciones.`,
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  categoria: { type: Type.STRING },
+                  opcion: { type: Type.STRING },
+                  ingles: { type: Type.STRING },
+                  espanol: { type: Type.STRING },
+                },
+                required: ["categoria", "opcion", "ingles", "espanol"],
               },
-              required: ["categoria", "opcion", "ingles", "espanol"],
             },
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            maxOutputTokens: 4000,
+            safetySettings: [
+              {
+                category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                threshold: "BLOCK_NONE",
+              },
+              {
+                category: "HARM_CATEGORY_HATE_SPEECH",
+                threshold: "BLOCK_NONE",
+              },
+              {
+                category: "HARM_CATEGORY_HARASSMENT",
+                threshold: "BLOCK_NONE",
+              },
+              {
+                category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+                threshold: "BLOCK_NONE",
+              },
+            ],
           },
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          maxOutputTokens: 4000,
-        },
-        contents: `Genera un organigrama estratégico diario para:
-        - Modelo: ${models.find(m => m.id.toString() === selectedModelId?.toString())?.name || "General"}
-        - Perfil: ${profile} | Estilo: ${selectedCategory}
-        - Descripción: ${modelDescription || "General"}
-        - Concepto: ${modelConcept || "General"}
+          contents: `Genera un organigrama estratégico diario para:
+          - Modelo: ${models.find(m => m.id.toString() === selectedModelId?.toString())?.name || "General"}
+          - Perfil: ${profile} | Estilo: ${selectedCategory}
+          - Descripción: ${modelDescription || "General"}
+          - Concepto: ${modelConcept || "General"}
+  
+          ${historyContext}
+  
+          Estructura obligatoria (Genera exactamente 20 items en total):
+          1. Tema de Sala (2 opciones)
+          2. Objetivos (5 niveles: 100, 500, 1000, 2000, 5000 tk). MÁXIMO 40 CARACTERES por frase.
+          3. Feed/Muro (2 posts)
+          4. Mensaje Masivo (2 líneas)
+          5. Enfoque de Contenido (2 párrafos concisos)
+          6. Saludos (2 opciones)
+          7. Invitaciones a Privado (2 CTAs)
+          8. Consejos Estratégicos (2 recomendaciones tácticas)
+          9. Bots de Bienvenida (2 mensajes)
+          10. Bot de Anuncio (2 mensajes)
+  
+          Asegura tono premium y bilingüe.`,
+        });
 
-        ${historyContext}
+        let text = "";
+        for await (const chunk of stream) {
+          text += chunk.text;
+        }
+        return text;
+      };
 
-        Estructura obligatoria (Genera exactamente 20 items en total):
-        1. Tema de Sala (2 opciones)
-        2. Objetivos (5 niveles: 100, 500, 1000, 2000, 5000 tk). MÁXIMO 40 CARACTERES por frase.
-        3. Feed/Muro (2 posts)
-        4. Mensaje Masivo (2 líneas)
-        5. Enfoque de Contenido (2 párrafos concisos)
-        6. Saludos (2 opciones)
-        7. Invitaciones a Privado (2 CTAs)
-        8. Consejos Estratégicos (2 recomendaciones tácticas)
-        9. Bots de Bienvenida (2 mensajes)
-        10. Bot de Anuncio (2 mensajes)
-
-        Asegura tono premium y bilingüe.`,
-      });
-
-      let fullText = "";
-      for await (const chunk of stream) {
-        fullText += chunk.text;
-      }
+      const fullText = await generateWithRetry(fetchContent, 4, 1500);
 
       if (!fullText) {
         throw new Error("La IA devolvió una respuesta vacía.");
