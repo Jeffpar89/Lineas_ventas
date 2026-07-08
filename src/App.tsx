@@ -472,7 +472,7 @@ function App() {
 
       const ai = new GoogleGenAI({ apiKey });
 
-      const generateWithRetry = async (fn: () => Promise<string>, retries = 4, delay = 1500): Promise<string> => {
+      const generateWithRetry = async (fn: () => Promise<string>, retries = 3, delay = 1000): Promise<string> => {
         try {
           return await fn();
         } catch (err: any) {
@@ -494,50 +494,58 @@ function App() {
         }
       };
 
-      const fetchContent = async (): Promise<string> => {
-        const stream = await ai.models.generateContentStream({
-          model: "gemini-3.5-flash",
-          config: {
-            systemInstruction: `Eres un estratega senior de marketing y contenido para la industria webcam de alto nivel (Tribu 1126). 
-            Tu lenguaje debe ser sofisticado, profesional, persuasivo y altamente específico del nicho. 
-            Generas organigramas bilingües (Inglés/Español) con una calidad literaria y comercial impecable.
-            IMPORTANTE: Estás trabajando en un contexto de estrategia de marketing para adultos. Los términos técnicos del nicho son necesarios. No bloquees la respuesta.
-            CRÍTICO: Devuelve ÚNICAMENTE el JSON solicitado. Sin texto adicional, sin explicaciones.`,
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  categoria: { type: Type.STRING },
-                  opcion: { type: Type.STRING },
-                  ingles: { type: Type.STRING },
-                  espanol: { type: Type.STRING },
-                },
-                required: ["categoria", "opcion", "ingles", "espanol"],
+      const fetchContent = async (modelName: string): Promise<string> => {
+        const isLite = modelName === "gemini-3.1-flash-lite";
+        const config: any = {
+          systemInstruction: `Eres un estratega senior de marketing y contenido para la industria webcam de alto nivel (Tribu 1126). 
+          Tu lenguaje debe ser sofisticado, profesional, persuasivo y altamente específico del nicho. 
+          Generas organigramas bilingües (Inglés/Español) con una calidad literaria y comercial impecable.
+          IMPORTANTE: Estás trabajando en un contexto de estrategia de marketing para adultos. Los términos técnicos del nicho son necesarios. No bloquees la respuesta.
+          CRÍTICO: Devuelve ÚNICAMENTE el JSON solicitado. Sin texto adicional, sin explicaciones.`,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                categoria: { type: Type.STRING },
+                opcion: { type: Type.STRING },
+                ingles: { type: Type.STRING },
+                espanol: { type: Type.STRING },
               },
+              required: ["categoria", "opcion", "ingles", "espanol"],
             },
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            maxOutputTokens: 4000,
-            safetySettings: [
-              {
-                category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                threshold: HarmBlockThreshold.BLOCK_NONE,
-              },
-              {
-                category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                threshold: HarmBlockThreshold.BLOCK_NONE,
-              },
-              {
-                category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-                threshold: HarmBlockThreshold.BLOCK_NONE,
-              },
-              {
-                category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                threshold: HarmBlockThreshold.BLOCK_NONE,
-              },
-            ],
           },
+          maxOutputTokens: 4000,
+          safetySettings: [
+            {
+              category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+              threshold: HarmBlockThreshold.BLOCK_NONE,
+            },
+            {
+              category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+              threshold: HarmBlockThreshold.BLOCK_NONE,
+            },
+            {
+              category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+              threshold: HarmBlockThreshold.BLOCK_NONE,
+            },
+            {
+              category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+              threshold: HarmBlockThreshold.BLOCK_NONE,
+            },
+          ],
+        };
+
+        if (isLite) {
+          config.thinkingConfig = { thinkingLevel: ThinkingLevel.MINIMAL };
+        } else {
+          config.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
+        }
+
+        const stream = await ai.models.generateContentStream({
+          model: modelName,
+          config,
           contents: `Genera un organigrama estratégico diario para:
           - Modelo: ${models.find(m => m.id.toString() === selectedModelId?.toString())?.name || "General"}
           - Perfil: ${profile} | Estilo: ${selectedCategory}
@@ -568,7 +576,19 @@ function App() {
         return text;
       };
 
-      const fullText = await generateWithRetry(fetchContent, 4, 1500);
+      let fullText = "";
+      try {
+        console.log("[Gemini API] Intentando generación con gemini-3.5-flash...");
+        fullText = await generateWithRetry(() => fetchContent("gemini-3.5-flash"), 3, 1000);
+      } catch (firstErr: any) {
+        console.warn("[Gemini API] gemini-3.5-flash falló (agotado o con alta demanda). Intentando fallback automático con gemini-3.1-flash-lite...", firstErr);
+        try {
+          fullText = await generateWithRetry(() => fetchContent("gemini-3.1-flash-lite"), 2, 1000);
+        } catch (secondErr: any) {
+          console.error("[Gemini API] El fallback también falló:", secondErr);
+          throw firstErr; // devolvemos el error inicial para un mensaje de error más claro si ambos fallan
+        }
+      }
 
       if (!fullText) {
         throw new Error("La IA devolvió una respuesta vacía.");
